@@ -115,7 +115,7 @@ In GitHub repository settings:
   - `AWS_ROLE_ARN`: ARN of the IAM role from step 1
 
 - **Secrets and variables → Actions → Variables**
-  - `AWS_REGION`: e.g. `eu-west-1`
+  - `AWS_REGION`: optional, e.g. `eu-west-1`; defaults to `aws_region` in the selected `infra/envs/<environment>.tfvars`
   - `TF_STATE_BUCKET`: optional S3 backend bucket for Terraform state
 
 ### 3) Configure protected environment (recommended)
@@ -138,7 +138,7 @@ Two trigger modes are supported:
 
 ## Notes
 
-- Keep `vars.AWS_REGION` aligned with your tfvars region.
+- If set, keep `vars.AWS_REGION` aligned with your tfvars region. Both Terraform jobs resolve the region before configuring AWS credentials.
 - Bedrock model IDs are set in:
   - `infra/envs/dev.tfvars`
   - `infra/envs/prod.tfvars`
