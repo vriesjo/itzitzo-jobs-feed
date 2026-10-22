@@ -46,7 +46,7 @@ CI/CD is in `.github/workflows/deploy-lambda.yml`:
 
 - Java 17+
 - Gradle 8+
-- Terraform 1.6+
+- Terraform 1.10+ (S3 state locking)
 - AWS CLI (for manual validation)
 
 ## Run locally (build/tests)
@@ -63,7 +63,10 @@ From repo root:
 
 ```bash
 cd infra
-terraform init
+terraform init \
+  -backend-config="bucket=itzitzo-jobs-feed-tfstate-607399097622" \
+  -backend-config="key=itzitzo-jobs-feed/dev.tfstate" \
+  -backend-config="region=eu-west-1"
 terraform plan -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/deploy/lambda.zip"
 terraform apply -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/deploy/lambda.zip"
 ```
@@ -130,7 +133,11 @@ In GitHub repository settings:
 
 - **Secrets and variables → Actions → Variables**
   - `AWS_REGION`: e.g. `eu-west-1`
-  - `TF_STATE_BUCKET`: optional S3 backend bucket for Terraform state
+  - `TF_STATE_BUCKET`: required S3 backend bucket for Terraform state (`itzitzo-jobs-feed-tfstate-607399097622` in this account)
+
+The state bucket must exist before Terraform runs. Keep it private, enable versioning and encryption, and grant the Actions role access to the state objects and their `.tflock` lock files. Terraform uses separate `itzitzo-jobs-feed/dev.tfstate` and `itzitzo-jobs-feed/prod.tfstate` keys, with S3 state locking. The workflow fails if `TF_STATE_BUCKET` is missing instead of using disposable local state.
+
+If a previous run created resources without persistent state, import those resources into the correct environment's backend before applying again; do not delete them to resolve "already exists" errors.
 
 ### 3) Configure protected environment (recommended)
 
@@ -150,13 +157,29 @@ Two trigger modes are supported:
   - Set `apply=true` to execute apply/deploy
   - If `apply=false`, only build + plan runs
 
+To trigger a dev plan on `main` and print its run ID and URL:
+
+```bash
+bash scripts/terraform-plan.sh
+```
+
+To trigger a dev apply/deploy on `main` and print its run ID and URL:
+
+```bash
+bash scripts/terraform-apply.sh
+```
+
+The apply script sets `apply=true` and changes AWS resources. Both scripts run the remote version of `main`, not your local uncommitted changes.
+
+The scripts use your saved GitHub CLI login and ignore `GITHUB_TOKEN` and `GH_TOKEN` for their process. If needed, first log in with `env -u GITHUB_TOKEN -u GH_TOKEN gh auth login`. Never put a personal access token in the scripts.
+
 ## Notes
 
 - Keep `vars.AWS_REGION` aligned with your tfvars region.
 - Bedrock model IDs are set in:
   - `infra/envs/dev.tfvars`
   - `infra/envs/prod.tfvars`
-- Lambda runtime env vars are provisioned by Terraform:
-  - `AWS_REGION`
+- Lambda supplies the reserved `AWS_REGION` runtime variable automatically.
+- Additional Lambda runtime env vars are provisioned by Terraform:
   - `BEDROCK_MODEL_ID`
   - `DYNAMODB_TABLE_NAME`
