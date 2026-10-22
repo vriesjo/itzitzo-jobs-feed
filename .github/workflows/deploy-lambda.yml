@@ -83,11 +83,25 @@ jobs:
           name: lambda-jar
           path: build/libs
 
+      - name: Resolve AWS region
+        id: resolve-region
+        shell: bash
+        run: |
+          if [ -z "$AWS_REGION" ]; then
+            AWS_REGION="$(awk -F '"' '/^[[:space:]]*aws_region[[:space:]]*=/ { print $2; exit }' "infra/envs/${ENVIRONMENT}.tfvars")"
+          fi
+          if [ -z "$AWS_REGION" ]; then
+            echo "::error::AWS_REGION is unset and no aws_region is defined in infra/envs/${ENVIRONMENT}.tfvars"
+            exit 1
+          fi
+          echo "AWS_REGION=$AWS_REGION" >> "$GITHUB_ENV"
+          echo "aws_region=$AWS_REGION" >> "$GITHUB_OUTPUT"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ steps.resolve-region.outputs.aws_region }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -138,11 +152,25 @@ jobs:
           name: lambda-jar
           path: build/libs
 
+      - name: Resolve AWS region
+        id: resolve-region
+        shell: bash
+        run: |
+          if [ -z "$AWS_REGION" ]; then
+            AWS_REGION="$(awk -F '"' '/^[[:space:]]*aws_region[[:space:]]*=/ { print $2; exit }' "infra/envs/${ENVIRONMENT}.tfvars")"
+          fi
+          if [ -z "$AWS_REGION" ]; then
+            echo "::error::AWS_REGION is unset and no aws_region is defined in infra/envs/${ENVIRONMENT}.tfvars"
+            exit 1
+          fi
+          echo "AWS_REGION=$AWS_REGION" >> "$GITHUB_ENV"
+          echo "aws_region=$AWS_REGION" >> "$GITHUB_OUTPUT"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ steps.resolve-region.outputs.aws_region }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
