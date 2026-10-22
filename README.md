@@ -97,12 +97,26 @@ Create a role trusted by GitHub Actions, with trust policy like:
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:vriesjo/itzitzo-jobs-feed:*"
+          "token.actions.githubusercontent.com:sub": [
+            "repo:vriesjo@13521613/itzitzo-jobs-feed@1429390963:ref:refs/heads/main",
+            "repo:vriesjo@13521613/itzitzo-jobs-feed@1429390963:ref:refs/tags/*",
+            "repo:vriesjo@13521613/itzitzo-jobs-feed@1429390963:environment:production"
+          ]
         }
       }
     }
   ]
 }
+```
+
+The subjects above match this repository's ID-qualified OIDC subject format. When configuring another repository, use its actual token subject rather than assuming the name-only format.
+
+To update the existing role from the checked-in policy, run from the repository root:
+
+```bash
+aws iam update-assume-role-policy \
+  --role-name github-actions-itzitzo-jobs-feed \
+  --policy-document file://infra/aws/github_actions_trust_policy.json
 ```
 
 Attach permissions that allow Terraform to manage Lambda/IAM/CloudWatch/DynamoDB used by this project.
@@ -120,8 +134,8 @@ In GitHub repository settings:
 
 ### 3) Configure protected environment (recommended)
 
-The apply job uses GitHub environment `production`.  
-Create environment `production` in repository settings and add required reviewers if you want approval gates before apply.
+The plan and apply jobs use GitHub environment `production`.
+Create environment `production` in repository settings and add required reviewers if you want approval gates before AWS access.
 
 ### 4) Trigger deployment
 
