@@ -83,6 +83,18 @@ jobs:
           name: lambda-jar
           path: build/libs
 
+      - name: Resolve AWS region
+        shell: bash
+        run: |
+          if [ -z "$AWS_REGION" ]; then
+            AWS_REGION="$(sed -n 's/^[[:space:]]*aws_region[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "infra/envs/${ENVIRONMENT}.tfvars")"
+          fi
+          if [ -z "$AWS_REGION" ]; then
+            echo "::error::Set vars.AWS_REGION or aws_region in infra/envs/${ENVIRONMENT}.tfvars"
+            exit 1
+          fi
+          echo "AWS_REGION=$AWS_REGION" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -137,6 +149,18 @@ jobs:
         with:
           name: lambda-jar
           path: build/libs
+
+      - name: Resolve AWS region
+        shell: bash
+        run: |
+          if [ -z "$AWS_REGION" ]; then
+            AWS_REGION="$(sed -n 's/^[[:space:]]*aws_region[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "infra/envs/${ENVIRONMENT}.tfvars")"
+          fi
+          if [ -z "$AWS_REGION" ]; then
+            echo "::error::Set vars.AWS_REGION or aws_region in infra/envs/${ENVIRONMENT}.tfvars"
+            exit 1
+          fi
+          echo "AWS_REGION=$AWS_REGION" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
