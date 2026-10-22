@@ -18,7 +18,6 @@ resource "aws_lambda_function" "app" {
 
   environment {
     variables = {
-      AWS_REGION          = var.aws_region
       BEDROCK_MODEL_ID    = var.bedrock_model_id
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.jobs.name
     }
