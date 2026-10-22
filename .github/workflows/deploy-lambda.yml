@@ -20,6 +20,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: terraform-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'prod' }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -73,6 +77,7 @@ jobs:
     environment: production
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'prod' }}
     steps:
       - name: Checkout
@@ -92,19 +97,18 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
 
       - name: Terraform init
         working-directory: infra
         shell: bash
         run: |
-          if [ -n "${{ vars.TF_STATE_BUCKET }}" ]; then
-            terraform init \
-              -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-              -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
-              -backend-config="region=${AWS_REGION}"
-          else
-            terraform init
-          fi
+          : "${TF_STATE_BUCKET:?Set the TF_STATE_BUCKET GitHub Actions variable before running Terraform}"
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
+            -backend-config="region=${AWS_REGION}"
 
       - name: Terraform plan
         working-directory: infra
@@ -128,6 +132,7 @@ jobs:
     environment: production
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'prod' }}
     steps:
       - name: Checkout
@@ -147,19 +152,18 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
 
       - name: Terraform init
         working-directory: infra
         shell: bash
         run: |
-          if [ -n "${{ vars.TF_STATE_BUCKET }}" ]; then
-            terraform init \
-              -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-              -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
-              -backend-config="region=${AWS_REGION}"
-          else
-            terraform init
-          fi
+          : "${TF_STATE_BUCKET:?Set the TF_STATE_BUCKET GitHub Actions variable before running Terraform}"
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
+            -backend-config="region=${AWS_REGION}"
 
       - name: Terraform apply
         working-directory: infra
