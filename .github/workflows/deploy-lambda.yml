@@ -1,0 +1,180 @@
+name: Deploy Lambda with Terraform
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment tfvars file name (dev/prod)"
+        required: true
+        default: "dev"
+      apply:
+        description: "Apply Terraform changes"
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10"
+
+      - name: Build and test
+        run: gradle clean test shadowJar --no-daemon
+
+      - name: Create Lambda deployment zip
+        shell: bash
+        run: |
+          mkdir -p build/deploy
+          jar_path="$(ls build/libs/*.jar | head -n 1)"
+          cp "$jar_path" build/deploy/app.jar
+          (
+            cd build/deploy
+            zip -q lambda.zip app.jar
+          )
+
+      - name: Resolve artifact path
+        id: artifact-name
+        shell: bash
+        run: |
+          artifact="build/deploy/lambda.zip"
+          echo "value=$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-jar
+          path: ${{ steps.artifact-name.outputs.value }}
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'prod' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-jar
+          path: build/libs
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        working-directory: infra
+        shell: bash
+        run: |
+          if [ -n "${{ vars.TF_STATE_BUCKET }}" ]; then
+            terraform init \
+              -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+              -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
+              -backend-config="region=${AWS_REGION}"
+          else
+            terraform init
+          fi
+
+      - name: Terraform plan
+        working-directory: infra
+        run: |
+          artifact_path="../build/libs/lambda.zip"
+          terraform plan \
+            -var-file="envs/${ENVIRONMENT}.tfvars" \
+            -var="lambda_artifact_path=${artifact_path}" \
+            -out=tfplan
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: infra/tfplan
+
+  terraform-apply-and-deploy:
+    runs-on: ubuntu-latest
+    needs: [build, terraform-plan]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.apply)
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'prod' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-jar
+          path: build/libs
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        working-directory: infra
+        shell: bash
+        run: |
+          if [ -n "${{ vars.TF_STATE_BUCKET }}" ]; then
+            terraform init \
+              -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+              -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
+              -backend-config="region=${AWS_REGION}"
+          else
+            terraform init
+          fi
+
+      - name: Terraform apply
+        working-directory: infra
+        run: |
+          artifact_path="../build/libs/lambda.zip"
+          terraform apply -auto-approve \
+            -var-file="envs/${ENVIRONMENT}.tfvars" \
+            -var="lambda_artifact_path=${artifact_path}"
+
+      - name: Publish Lambda code package
+        working-directory: infra
+        shell: bash
+        run: |
+          function_name="$(terraform output -raw lambda_function_name)"
+          artifact_path="../build/libs/lambda.zip"
+          aws lambda update-function-code \
+            --function-name "$function_name" \
+            --zip-file "fileb://${artifact_path}" \
+            --publish >/dev/null
