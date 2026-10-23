@@ -45,7 +45,7 @@ jobs:
           gradle-version: "8.10"
 
       - name: Build and test
-        run: ./gradlew clean test lambdaZip --no-daemon
+        run: gradle clean test lambdaZip --no-daemon
 
       - name: Resolve artifact path
         id: artifact-name
