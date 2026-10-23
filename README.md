@@ -1,15 +1,18 @@
 # itzitzo-jobs-feed
 
-Java 17 AWS Lambda project (Gradle) prepared for:
-- AWS Bedrock calls
-- DynamoDB persistence
+Java 17 AWS Lambda project (Gradle) with:
+- SES/S3 email ingestion and Amazon Nova job extraction through Bedrock Converse
+- Duplicate-safe DynamoDB persistence and a public RSS feed through API Gateway
 - Terraform provisioning
 - GitHub Actions deployment via AWS OIDC
 
 ## How it works
 
-The Lambda handler is `com.itzitzo.jobsfeed.LambdaHandler::handleRequest`.  
-It routes by `action` in the input payload:
+The Lambda handler is `com.itzitzo.jobsfeed.LambdaHandler::handleRequest`.
+
+- SES receipt events fetch raw MIME from the configured private S3 bucket, normalize text, extract jobs with Nova, and atomically save jobs plus a processed-message marker.
+- API Gateway HTTP API v2 events serve the latest 50 jobs at `GET /feed.xml` as RSS 2.0. Other methods return 405; unknown paths return 404.
+- Direct invocations can still use these internal `action` values (they are not exposed through HTTP):
 - `health` (default) → returns `{ "status": "ok", "message": "ok" }`
 - `saveJob` → stores `pk`, `sk`, `payload` in DynamoDB
 - `getJob` → reads item from DynamoDB
@@ -20,6 +23,8 @@ Infrastructure is managed by Terraform in `infra/`:
 - DynamoDB table (`pk` + `sk`, on-demand billing)
 - IAM role/policy for logs + DynamoDB + Bedrock invoke
 - CloudWatch log group
+- Private email bucket, 30-day raw-email retention, asynchronous failure queue, and alarms
+- API Gateway HTTP API and an opt-in SES rule in an existing receipt rule set
 
 CI/CD is in `.github/workflows/deploy-lambda.yml`:
 1. Build/test/package Lambda artifact.
@@ -52,10 +57,10 @@ CI/CD is in `.github/workflows/deploy-lambda.yml`:
 ## Run locally (build/tests)
 
 ```bash
-gradle clean test shadowJar
+./gradlew clean test lambdaZip
 ```
 
-This creates a deployment JAR in `build/libs/`.
+This creates a deployment JAR in `build/libs/` and `build/deploy/lambda.zip`, with the JAR under `lib/` for the Lambda Java runtime.
 
 ## Terraform usage (manual)
 
@@ -72,6 +77,64 @@ terraform apply -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/de
 ```
 
 `lambda_artifact_path` points to the zip produced in CI (`build/deploy/lambda.zip`).
+
+Infrastructure checks that do not create AWS resources:
+
+```bash
+terraform -chdir=infra validate
+terraform -chdir=infra test
+```
+
+The Terraform tests use a mocked AWS provider and require the deployment ZIP to have been built first.
+
+## Email-to-RSS configuration
+
+Both environment files select `eu.amazon.nova-micro-v1:0`. Nova Lite can be selected with `eu.amazon.nova-lite-v1:0`; evaluate both on representative fixtures before choosing the production model. Requests use Bedrock Converse, not Titan's `inputText` format.
+
+Confirm the inference profile is available from the deployment region and review its cross-region destinations before sending real email content. IAM is scoped to the selected standard model and profile; custom model/profile ARNs require an explicit `bedrock_resource_arns` list including the underlying models. There is no automatic model fallback.
+
+SES receipt integration is **disabled by default**. Terraform never creates or activates a receipt rule set, changes MX records, or verifies a domain. After reviewing the existing SES routes, domain identity, and MX configuration, opt in for dev with:
+
+```hcl
+enable_ses_receipt_rule    = true
+ses_receipt_rule_set_name = "your-existing-rule-set"
+ses_recipient             = "jobs@your-domain.example"
+```
+
+Ensure that rule set is already active in the intended region and earlier rules do not stop delivery before this rule. The new rule stores the email under `incoming/` before invoking Lambda asynchronously and requires TLS. It does not stop subsequent rules.
+
+The initial receipt policy requires spam, virus, and DMARC verdicts to be `PASS`, plus at least one of SPF or DKIM to be `PASS`. Missing, gray, failed, or error verdicts are rejected and follow the asynchronous failure path. Review this strict policy before enabling receipt; forwarded mail may be rejected.
+
+Ingestion accepts raw messages up to 5 MiB and normalized text up to 64 KiB, ignores attachments, and extracts at most 20 jobs per message. Oversize messages, malformed/truncated extraction output, and dependency errors fail explicitly. Zero-job messages are marked processed. Replayed messages cannot duplicate published jobs, although concurrent processing can still incur repeated inference charges before one transaction wins.
+
+The feed is public. Only reviewed job fields are rendered; sender metadata and raw MIME are not included. Review extraction quality and publication suitability before routing private correspondence to this address.
+
+After a dev apply:
+
+```bash
+terraform -chdir=infra output -raw feed_url
+terraform -chdir=infra output -raw email_bucket_name
+terraform -chdir=infra output -raw ingestion_failure_queue_url
+```
+
+Send a synthetic job email, confirm its S3 object and DynamoDB feed entries, and fetch the feed URL with `curl`. Replay the same SES event and verify the GUIDs and item count remain unchanged. Also check an empty feed and a failed ingestion before enabling prod.
+
+Failures are retried twice with a one-hour maximum event age, then captured as Lambda destination records in the encrypted SQS queue for up to 14 days. Use the queue output to inspect a message, extract the original SES event from `requestPayload`, and invoke Lambda asynchronously with that event:
+
+```bash
+aws lambda invoke \
+  --function-name itzitzo-jobs-feed-dev-lambda \
+  --invocation-type Event \
+  --cli-binary-format raw-in-base64-out \
+  --payload file://original-ses-event.json \
+  replay-response.json
+```
+
+The example requires AWS CLI v2. Do not replay the complete SQS/destination wrapper, and do not attach the queue directly as a Lambda event source. Confirm processing before deleting a failure message. Raw email expires after 30 days, so recovery must happen while the S3 object still exists; processed-message markers do not expire.
+
+Set `alarm_actions` to your SNS topic ARNs to receive notifications. Without those ARNs, alarms record state changes but do not notify operators.
+
+See [the implementation specification](.github/issues/feature_email_to_rss.md) for the complete scope and acceptance checklist. Live email delivery, model comparison, and production routing approval remain deployment checks, not unit-test guarantees.
 
 ## Enable GitHub Actions deployment to AWS
 
@@ -166,10 +229,10 @@ bash scripts/terraform-plan.sh
 To trigger a dev apply/deploy on `main` and print its run ID and URL:
 
 ```bash
-bash scripts/terraform-apply.sh
+make workflow-deploy
 ```
 
-The apply script sets `apply=true` and changes AWS resources. Both scripts run the remote version of `main`, not your local uncommitted changes.
+`make workflow-deploy` runs `scripts/terraform-apply.sh`. The apply script sets `apply=true` and changes AWS resources. Both scripts run the remote version of `main`, not your local uncommitted changes.
 
 The scripts use your saved GitHub CLI login and ignore `GITHUB_TOKEN` and `GH_TOKEN` for their process. If needed, first log in with `env -u GITHUB_TOKEN -u GH_TOKEN gh auth login`. Never put a personal access token in the scripts.
 
@@ -183,3 +246,5 @@ The scripts use your saved GitHub CLI login and ignore `GITHUB_TOKEN` and `GH_TO
 - Additional Lambda runtime env vars are provisioned by Terraform:
   - `BEDROCK_MODEL_ID`
   - `DYNAMODB_TABLE_NAME`
+  - `EMAIL_BUCKET_NAME` and `EMAIL_OBJECT_PREFIX`
+  - `FEED_TITLE`, `FEED_DESCRIPTION`, `FEED_WEBSITE_URL`, and `FEED_PUBLIC_URL`

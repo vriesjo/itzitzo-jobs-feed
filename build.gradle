@@ -23,11 +23,17 @@ dependencies {
     implementation platform('software.amazon.awssdk:bom:2.30.13')
     implementation 'software.amazon.awssdk:bedrockruntime'
     implementation 'software.amazon.awssdk:dynamodb'
+    implementation 'software.amazon.awssdk:s3'
+
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.3'
+    implementation 'org.eclipse.angus:jakarta.mail:2.0.3'
+    implementation 'org.jsoup:jsoup:1.18.3'
 
     implementation 'org.slf4j:slf4j-api:2.0.16'
     runtimeOnly 'org.slf4j:slf4j-simple:2.0.16'
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.11.3'
+    testImplementation 'org.mockito:mockito-core:5.15.2'
 }
 
 tasks.test {
@@ -41,4 +47,14 @@ tasks.shadowJar {
 
 tasks.jar {
     enabled = false
+}
+
+tasks.register('lambdaZip', Zip) {
+    dependsOn tasks.shadowJar
+    archiveFileName = 'lambda.zip'
+    destinationDirectory = layout.buildDirectory.dir('deploy')
+    from(tasks.shadowJar.archiveFile) {
+        into 'lib'
+        rename { 'app.jar' }
+    }
 }
