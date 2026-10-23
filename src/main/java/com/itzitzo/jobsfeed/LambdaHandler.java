@@ -2,37 +2,86 @@ package com.itzitzo.jobsfeed;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.itzitzo.jobsfeed.config.AwsClientsConfig;
+import com.itzitzo.jobsfeed.model.SesMessage;
 import com.itzitzo.jobsfeed.service.BedrockGateway;
 import com.itzitzo.jobsfeed.service.BedrockService;
 import com.itzitzo.jobsfeed.service.DynamoDbService;
+import com.itzitzo.jobsfeed.service.EmailIngestionService;
+import com.itzitzo.jobsfeed.service.HttpFeedHandler;
 import com.itzitzo.jobsfeed.service.JobStore;
+import com.itzitzo.jobsfeed.service.RssRenderer;
+import com.itzitzo.jobsfeed.service.S3EmailReader;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class LambdaHandler implements RequestHandler<Map<String, Object>, Map<String, Object>> {
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Logger LOG = LoggerFactory.getLogger(LambdaHandler.class);
     private final BedrockGateway bedrockGateway;
     private final JobStore jobStore;
+    private final EmailIngestionService ingestion;
+    private final HttpFeedHandler feed;
 
     public LambdaHandler() {
         String region = requiredEnv("AWS_REGION");
         String modelId = requiredEnv("BEDROCK_MODEL_ID");
         String tableName = requiredEnv("DYNAMODB_TABLE_NAME");
-        this.bedrockGateway = new BedrockService(AwsClientsConfig.bedrockClient(region), modelId);
+        BedrockService bedrock = new BedrockService(AwsClientsConfig.bedrockClient(region), modelId);
+        this.bedrockGateway = bedrock;
         this.jobStore = new DynamoDbService(AwsClientsConfig.dynamoDbClient(region), tableName);
+        this.ingestion = new EmailIngestionService(new S3EmailReader(AwsClientsConfig.s3Client(region),
+            requiredEnv("EMAIL_BUCKET_NAME"), requiredEnv("EMAIL_OBJECT_PREFIX")), bedrock, jobStore);
+        this.feed = new HttpFeedHandler(jobStore, new RssRenderer(
+            requiredEnv("FEED_TITLE"), requiredEnv("FEED_DESCRIPTION"),
+            requiredEnv("FEED_WEBSITE_URL"), requiredEnv("FEED_PUBLIC_URL")));
     }
 
-    LambdaHandler(BedrockGateway bedrockGateway, JobStore jobStore) {
+    LambdaHandler(BedrockGateway bedrockGateway, JobStore jobStore, EmailIngestionService ingestion, HttpFeedHandler feed) {
         this.bedrockGateway = bedrockGateway;
         this.jobStore = jobStore;
+        this.ingestion = ingestion;
+        this.feed = feed;
     }
 
     @Override
     public Map<String, Object> handleRequest(Map<String, Object> input, Context context) {
+        JsonNode event = JSON.valueToTree(input == null ? Map.of() : input);
+        if (event.has("requestContext") || event.has("version") || event.has("httpMethod") || event.has("rawPath")) {
+            return feed.handle(event);
+        }
+        if (event.has("Records")) {
+            int count = 0;
+            int duplicates = 0;
+            try {
+                for (SesMessage message : SesMessage.parseRecords(event.path("Records"))) {
+                    long start = System.nanoTime();
+                    LOG.info("event=email_started messageId={} requestId={}", message.messageId(),
+                        context == null ? "local" : context.getAwsRequestId());
+                    EmailIngestionService.Result result = ingestion.ingest(message.messageId(), message.receivedAt());
+                    count += result.jobCount();
+                    duplicates += result.duplicate() ? 1 : 0;
+                    LOG.info("event=email_processed messageId={} jobCount={} duplicate={} durationMs={}",
+                        message.messageId(), result.jobCount(), result.duplicate(), (System.nanoTime() - start) / 1_000_000);
+                }
+            } catch (RuntimeException e) {
+                LOG.error("event=ingestion_failed requestId={} failureType={}",
+                    context == null ? "local" : context.getAwsRequestId(), e.getClass().getSimpleName());
+                throw e;
+            }
+            return ok(Map.of("jobCount", count, "duplicates", duplicates));
+        }
+        if (!event.isEmpty() && !event.has("action")) {
+            LOG.warn("event=invocation_rejected code=unsupported_event");
+            throw new IllegalArgumentException("Unsupported event");
+        }
         String action = stringValue(input, "action").orElse("health");
-        context.getLogger().log("Processing action: " + action);
         switch (action) {
             case "saveJob":
                 return saveJob(input);
@@ -41,8 +90,10 @@ public class LambdaHandler implements RequestHandler<Map<String, Object>, Map<St
             case "bedrockInvoke":
                 return invokeBedrock(input);
             case "health":
-            default:
                 return ok(Map.of("message", "ok"));
+            default:
+                LOG.warn("event=invocation_rejected code=unsupported_action");
+                throw new IllegalArgumentException("Unsupported action");
         }
     }
 

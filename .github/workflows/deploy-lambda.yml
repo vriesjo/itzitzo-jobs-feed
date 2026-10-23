@@ -45,18 +45,7 @@ jobs:
           gradle-version: "8.10"
 
       - name: Build and test
-        run: gradle clean test shadowJar --no-daemon
-
-      - name: Create Lambda deployment zip
-        shell: bash
-        run: |
-          mkdir -p build/deploy
-          jar_path="$(ls build/libs/*.jar | head -n 1)"
-          cp "$jar_path" build/deploy/app.jar
-          (
-            cd build/deploy
-            zip -q lambda.zip app.jar
-          )
+        run: ./gradlew clean test lambdaZip --no-daemon
 
       - name: Resolve artifact path
         id: artifact-name
@@ -109,6 +98,12 @@ jobs:
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="key=itzitzo-jobs-feed/${ENVIRONMENT}.tfstate" \
             -backend-config="region=${AWS_REGION}"
+
+      - name: Validate Terraform and run mocked infrastructure tests
+        working-directory: infra
+        run: |
+          terraform validate
+          terraform test -var="lambda_artifact_path=../build/libs/lambda.zip"
 
       - name: Terraform plan
         working-directory: infra
