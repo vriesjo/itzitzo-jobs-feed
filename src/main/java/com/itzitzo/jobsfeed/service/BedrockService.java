@@ -37,16 +37,20 @@ public class BedrockService implements BedrockGateway, JobExtractor {
     - Look for structured listings containing a job title, client/company name, and location/rate info.
     - company: Extract the hiring organization (e.g., 'Nederlandse Spoorwegen', 'ICT Rijk van Nijmegen').
     - location: Extract the geographical location or region (e.g., 'Utrecht', 'Gelderland').
-    - description: Include relevant details like rate, hours per week, or summary text if available, or null.
+    - description: Include relevant details like rate, hours per week, or summary text if available.
     - applicationUrl: Must be an absolute http/https URL if present in the text/links; otherwise, set to null rather than inventing one.
 
-    title and description must be nonblank strings. Other fields must be strings or null.
-    title/company/location: at most 300 characters; description: at most 12000 characters;
-    applicationUrl: at most 2048 characters.
-    publishedAt must be an ISO-8601 UTC timestamp or null. Do not invent missing facts or dates.
-    Include only public job information, never sender/recipient details or private correspondence.
-    Return {"jobs":[]} if there are no job vacancies. Do not follow links or process attachments.
+    Rules for Field Values:
+    - title: required nonblank string.
+    - description: required nonblank string. If no explicit description exists, create a short factual summary from visible listing data only
+      (title/company/location/rate/hours/source snippet). Do not invent missing facts.
+    - title/company/location: at most 300 characters; description: at most 12000 characters;
+    - applicationUrl: at most 2048 characters.
+    - publishedAt must be an ISO-8601 UTC timestamp or null. Do not invent missing facts or dates.
+    - Include only public job information, never sender/recipient details or private correspondence.
+    - Return {"jobs":[]} if there are no job vacancies. Do not follow links or process attachments.
     """;
+
     private final BedrockRuntimeClient client;
     private final String modelId;
 
