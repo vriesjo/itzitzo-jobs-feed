@@ -104,3 +104,40 @@ variable "alarm_actions" {
   description = "Optional SNS topic ARNs for ingestion and destination failure alarms."
   default     = []
 }
+
+variable "contact_allowed_email" {
+  type        = string
+  description = "Only this sender email is accepted by the public contact endpoint."
+  default     = "vriesjo@gmail.com"
+}
+
+variable "contact_token" {
+  type        = string
+  description = "Shared secret expected in X-Contact-Token for the contact endpoint."
+  default     = ""
+  sensitive   = true
+}
+
+variable "api_alarm_4xx_threshold" {
+  type        = number
+  description = "5-minute sum threshold for API Gateway 4XX errors."
+  default     = 25
+}
+
+variable "api_alarm_5xx_threshold" {
+  type        = number
+  description = "5-minute sum threshold for API Gateway 5XX errors."
+  default     = 1
+}
+
+variable "api_alarm_count_threshold" {
+  type        = number
+  description = "5-minute sum threshold for API Gateway request count spikes."
+  default     = 500
+}
+
+variable "api_alarm_throttle_threshold" {
+  type        = number
+  description = "5-minute sum threshold for API Gateway throttle events."
+  default     = 10
+}

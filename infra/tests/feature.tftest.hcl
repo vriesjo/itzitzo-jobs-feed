@@ -40,7 +40,11 @@ run "safe_defaults" {
     error_message = "The handler requires API Gateway HTTP API payload version 2."
   }
   assert {
-    condition     = aws_lambda_function.app.environment[0].variables["BEDROCK_MODEL_ID"] == "eu.amazon.nova-micro-v1:0" && !contains(keys(aws_lambda_function.app.environment[0].variables), "AWS_REGION")
+    condition     = aws_apigatewayv2_route.contact.route_key == "ANY /contact" && aws_lambda_permission.contact.statement_id == "AllowContactApi"
+    error_message = "Contact endpoint route and invoke permission must be provisioned."
+  }
+  assert {
+    condition     = aws_lambda_function.app.environment[0].variables["BEDROCK_MODEL_ID"] == "eu.amazon.nova-micro-v1:0" && aws_lambda_function.app.environment[0].variables["CONTACT_ALLOWED_EMAIL"] == "vriesjo@gmail.com" && !contains(keys(aws_lambda_function.app.environment[0].variables), "AWS_REGION")
     error_message = "Configure Nova without overriding Lambda's reserved region variable."
   }
   assert {

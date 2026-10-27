@@ -8,6 +8,7 @@ import com.itzitzo.jobsfeed.config.AwsClientsConfig;
 import com.itzitzo.jobsfeed.model.SesMessage;
 import com.itzitzo.jobsfeed.service.BedrockGateway;
 import com.itzitzo.jobsfeed.service.BedrockService;
+import com.itzitzo.jobsfeed.service.ContactRequestHandler;
 import com.itzitzo.jobsfeed.service.DynamoDbService;
 import com.itzitzo.jobsfeed.service.EmailIngestionService;
 import com.itzitzo.jobsfeed.service.HttpFeedHandler;
@@ -38,9 +39,14 @@ public class LambdaHandler implements RequestHandler<Map<String, Object>, Map<St
         this.jobStore = new DynamoDbService(AwsClientsConfig.dynamoDbClient(region), tableName);
         this.ingestion = new EmailIngestionService(new S3EmailReader(AwsClientsConfig.s3Client(region),
             requiredEnv("EMAIL_BUCKET_NAME"), requiredEnv("EMAIL_OBJECT_PREFIX")), bedrock, jobStore);
+        ContactRequestHandler contact = new ContactRequestHandler(
+            envOrBlank("CONTACT_ALLOWED_EMAIL"),
+            envOrBlank("CONTACT_TOKEN"),
+            message -> LOG.info("event=contact_received email={} subjectLength={}",
+                message.email(), message.subject().length()));
         this.feed = new HttpFeedHandler(jobStore, new RssRenderer(
             requiredEnv("FEED_TITLE"), requiredEnv("FEED_DESCRIPTION"),
-            requiredEnv("FEED_WEBSITE_URL"), requiredEnv("FEED_PUBLIC_URL")));
+            requiredEnv("FEED_WEBSITE_URL"), requiredEnv("FEED_PUBLIC_URL")), contact);
     }
 
     LambdaHandler(BedrockGateway bedrockGateway, JobStore jobStore, EmailIngestionService ingestion, HttpFeedHandler feed) {
@@ -153,5 +159,10 @@ public class LambdaHandler implements RequestHandler<Map<String, Object>, Map<St
             throw new IllegalStateException("Missing required environment variable: " + key);
         }
         return value;
+    }
+
+    private static String envOrBlank(String key) {
+        String value = System.getenv(key);
+        return value == null ? "" : value;
     }
 }

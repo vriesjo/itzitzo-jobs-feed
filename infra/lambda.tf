@@ -26,6 +26,8 @@ resource "aws_lambda_function" "app" {
       FEED_DESCRIPTION    = var.feed_description
       FEED_PUBLIC_URL     = local.feed_url
       FEED_WEBSITE_URL    = var.feed_website_url == "" ? local.feed_url : var.feed_website_url
+      CONTACT_ALLOWED_EMAIL = var.contact_allowed_email
+      CONTACT_TOKEN         = var.contact_token
     }
   }
 

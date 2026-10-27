@@ -63,9 +63,76 @@ class RssFeedTest {
         assertFalse(result.get("body").toString().contains("private error"));
     }
 
+    @Test
+    void acceptsOnlyAllowlistedContactRequestsWithToken() {
+        ContactMessageSink sink = mock(ContactMessageSink.class);
+        ContactRequestHandler contact = new ContactRequestHandler("vriesjo@gmail.com", "secret-token", sink);
+        HttpFeedHandler handler = new HttpFeedHandler(mock(JobStore.class), renderer, contact);
+        Map<String, Object> accepted = http(handler, "POST", "/contact", Map.of(
+            "content-type", "application/json",
+            "x-contact-token", "secret-token"), """
+                {"name":"Johan","email":"vriesjo@gmail.com","subject":"test","message":"Testing"}
+                """, false);
+        assertEquals(202, accepted.get("statusCode"));
+        verify(sink).submit(new ContactMessage("Johan", "vriesjo@gmail.com", "test", "Testing"));
+
+        Map<String, Object> missingToken = http(handler, "POST", "/contact", Map.of(
+            "content-type", "application/json"), """
+                {"name":"Johan","email":"vriesjo@gmail.com","subject":"test","message":"Testing"}
+                """, false);
+        assertEquals(401, missingToken.get("statusCode"));
+        verifyNoMoreInteractions(sink);
+
+        Map<String, Object> forbiddenEmail = http(handler, "POST", "/contact", Map.of(
+            "content-type", "application/json",
+            "x-contact-token", "secret-token"), """
+                {"name":"Johan","email":"other@example.com","subject":"test","message":"Testing"}
+                """, false);
+        assertEquals(403, forbiddenEmail.get("statusCode"));
+
+        Map<String, Object> wrongToken = http(handler, "POST", "/contact", Map.of(
+            "content-type", "application/json",
+            "x-contact-token", "wrong"), """
+                {"name":"Johan","email":"vriesjo@gmail.com","subject":"test","message":"Testing"}
+                """, false);
+        assertEquals(403, wrongToken.get("statusCode"));
+        verifyNoMoreInteractions(sink);
+    }
+
+    @Test
+    void rejectsInvalidContactPayloadsWithoutSideEffects() {
+        ContactMessageSink sink = mock(ContactMessageSink.class);
+        ContactRequestHandler contact = new ContactRequestHandler("vriesjo@gmail.com", "secret-token", sink);
+        HttpFeedHandler handler = new HttpFeedHandler(mock(JobStore.class), renderer, contact);
+        Map<String, Object> badPayload = http(handler, "POST", "/contact", Map.of(
+            "content-type", "application/json",
+            "x-contact-token", "secret-token"), """
+                {"name":"Johan","email":"vriesjo@gmail.com","subject":"test","message":"<script>alert(1)</script>"}
+                """, false);
+        assertEquals(400, badPayload.get("statusCode"));
+        Map<String, Object> wrongMethod = http(handler, "GET", "/contact");
+        assertEquals(405, wrongMethod.get("statusCode"));
+        assertEquals("POST", ((Map<?, ?>) wrongMethod.get("headers")).get("Allow"));
+        verifyNoInteractions(sink);
+    }
+
     private static Map<String, Object> http(HttpFeedHandler handler, String method, String path) {
+        return http(handler, method, path, Map.of(), null, false);
+    }
+
+    private static Map<String, Object> http(
+        HttpFeedHandler handler,
+        String method,
+        String path,
+        Map<String, String> headers,
+        String body,
+        boolean isBase64Encoded
+    ) {
         return handler.handle(new ObjectMapper().valueToTree(Map.of("version", "2.0", "requestContext",
-            Map.of("http", Map.of("method", method, "path", path)))));
+            Map.of("http", Map.of("method", method, "path", path)),
+            "headers", headers,
+            "body", body == null ? "" : body,
+            "isBase64Encoded", isBase64Encoded)));
     }
 
     private static Document parse(String xml) throws Exception {

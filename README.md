@@ -11,7 +11,9 @@ Java 17 AWS Lambda project (Gradle) with:
 The Lambda handler is `com.itzitzo.jobsfeed.LambdaHandler::handleRequest`.
 
 - SES receipt events fetch raw MIME from the configured private S3 bucket, normalize text, extract jobs with Nova, and atomically save jobs plus a processed-message marker.
-- API Gateway HTTP API v2 events serve the latest 50 jobs at `GET /feed.xml` as RSS 2.0. Other methods return 405; unknown paths return 404.
+- API Gateway HTTP API v2 events serve the latest 50 jobs at `GET /feed.xml` as RSS 2.0.
+- API Gateway HTTP API v2 events accept `POST /contact` only when `email` matches the configured allowlist and header `X-Contact-Token` matches the configured secret; malformed requests are rejected.
+- Other methods return 405; unknown paths return 404.
 - Direct invocations can still use these internal `action` values (they are not exposed through HTTP):
 - `health` (default) → returns `{ "status": "ok", "message": "ok" }`
 - `saveJob` → stores `pk`, `sk`, `payload` in DynamoDB
@@ -248,3 +250,4 @@ The scripts use your saved GitHub CLI login and ignore `GITHUB_TOKEN` and `GH_TO
   - `DYNAMODB_TABLE_NAME`
   - `EMAIL_BUCKET_NAME` and `EMAIL_OBJECT_PREFIX`
   - `FEED_TITLE`, `FEED_DESCRIPTION`, `FEED_WEBSITE_URL`, and `FEED_PUBLIC_URL`
+  - `CONTACT_ALLOWED_EMAIL` and `CONTACT_TOKEN`

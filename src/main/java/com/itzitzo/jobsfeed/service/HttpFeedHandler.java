@@ -12,10 +12,17 @@ public class HttpFeedHandler {
     private static final Logger LOG = LoggerFactory.getLogger(HttpFeedHandler.class);
     private final JobStore store;
     private final RssRenderer renderer;
+    private final ContactRequestHandler contact;
 
     public HttpFeedHandler(JobStore store, RssRenderer renderer) {
+        this(store, renderer, new ContactRequestHandler("", "", message -> {
+        }));
+    }
+
+    public HttpFeedHandler(JobStore store, RssRenderer renderer, ContactRequestHandler contact) {
         this.store = store;
         this.renderer = renderer;
+        this.contact = contact;
     }
 
     public Map<String, Object> handle(JsonNode event) {
@@ -25,10 +32,23 @@ public class HttpFeedHandler {
             LOG.warn("event=http_rejected code=invalid_event");
             return response(400, "Invalid HTTP event", Map.of());
         }
-        if (!"/feed.xml".equals(http.path("path").textValue())) {
-            return response(404, "Not found", Map.of());
+        String path = http.path("path").textValue();
+        String method = http.path("method").textValue();
+        if ("/feed.xml".equals(path)) {
+            return feed(method);
         }
-        if (!"GET".equals(http.path("method").textValue())) {
+        if ("/contact".equals(path)) {
+            try {
+                return contact.handle(event, method);
+            } catch (IllegalArgumentException e) {
+                return response(400, "Invalid request payload", Map.of());
+            }
+        }
+        return response(404, "Not found", Map.of());
+    }
+
+    private Map<String, Object> feed(String method) {
+        if (!"GET".equals(method)) {
             return response(405, "Method not allowed", Map.of("Allow", "GET"));
         }
         try {
