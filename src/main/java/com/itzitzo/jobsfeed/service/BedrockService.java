@@ -96,9 +96,10 @@ public class BedrockService implements BedrockGateway, JobExtractor {
     }
 
     static List<JobDetails> parseJobs(String response) {
+        String payload = firstJsonObject(response);
         JsonNode root;
         try {
-            root = JSON.readTree(response);
+            root = JSON.readTree(payload);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Invalid extraction JSON");
         }
@@ -122,6 +123,58 @@ public class BedrockService implements BedrockGateway, JobExtractor {
                 publishedAt == null ? null : parseTimestamp(publishedAt)));
         }
         return List.copyOf(jobs);
+    }
+
+    private static String firstJsonObject(String response) {
+        if (response == null) {
+            return "";
+        }
+        for (int start = response.indexOf('{'); start >= 0; start = response.indexOf('{', start + 1)) {
+            int end = matchingObjectEnd(response, start);
+            if (end < 0) {
+                continue;
+            }
+            String candidate = response.substring(start, end + 1);
+            try {
+                JsonNode node = JSON.readTree(candidate);
+                if (node != null && node.isObject()) {
+                    return candidate;
+                }
+            } catch (JsonProcessingException ignored) {
+                // Continue searching for the first parseable top-level JSON object.
+            }
+        }
+        return response;
+    }
+
+    private static int matchingObjectEnd(String text, int start) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
     }
 
     private static String text(JsonNode node, String field) {

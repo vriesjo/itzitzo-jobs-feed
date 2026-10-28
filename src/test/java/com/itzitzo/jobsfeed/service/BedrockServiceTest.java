@@ -53,13 +53,26 @@ class BedrockServiceTest {
             "{\"jobs\":[{\"title\":\"Java Developer\",\"description\":\"Build services.\"}]}").size());
         for (String json : List.of(
             "not json", "{\"jobs\":null}", "{\"jobs\":[],\"extra\":true}",
-            "{\"jobs\":[],\"jobs\":[]}", "{\"jobs\":[]} {}",
+            "{\"jobs\":[],\"jobs\":[]}",
             "{\"jobs\":[{}]}", "{\"jobs\":[" + JOB.replace("\"Java Developer\"", "42") + "]}",
             "{\"jobs\":[" + JOB.replace("https://example.com/job?a=1&b=2", "javascript:alert(1)") + "]}",
             "{\"jobs\":[" + String.join(",", java.util.Collections.nCopies(21, JOB)) + "]}",
             "{\"jobs\":[" + JOB.replace("\"publishedAt\":null", "\"publishedAt\":\"yesterday\"") + "]}")) {
             assertThrows(RuntimeException.class, () -> BedrockService.parseJobs(json));
         }
+    }
+
+    @Test
+    void acceptsJsonWrappedInMarkdownOrProse() {
+        assertEquals(1, BedrockService.parseJobs("""
+            Here is the extracted result:
+            ```json
+            {"jobs":[{"title":"Java Developer","description":"Build services."}]}
+            ```
+            """).size());
+        assertEquals(List.of(), BedrockService.parseJobs("""
+            Extraction completed. {"jobs":[]} Thanks!
+            """));
     }
 
     private static ConverseResponse response(StopReason reason, String text) {
