@@ -14,5 +14,10 @@ resource "aws_dynamodb_table" "jobs" {
     type = "S"
   }
 
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
   tags = local.tags
 }

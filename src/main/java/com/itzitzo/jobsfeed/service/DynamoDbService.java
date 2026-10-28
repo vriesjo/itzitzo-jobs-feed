@@ -4,6 +4,7 @@ import com.itzitzo.jobsfeed.model.Job;
 import com.itzitzo.jobsfeed.model.JobDetails;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -23,6 +24,7 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 
 public class DynamoDbService implements JobStore {
+    private static final long JOB_TTL_DAYS = 21;
     private final DynamoDbClient dynamoDbClient;
     private final String tableName;
 
@@ -37,6 +39,7 @@ public class DynamoDbService implements JobStore {
         item.put("pk", AttributeValue.builder().s(pk).build());
         item.put("sk", AttributeValue.builder().s(sk).build());
         item.put("payload", AttributeValue.builder().s(payload).build());
+        item.put("expiresAt", number(Instant.now().plus(JOB_TTL_DAYS, ChronoUnit.DAYS).getEpochSecond()));
         PutItemRequest request = PutItemRequest.builder()
             .tableName(tableName)
             .item(item)
@@ -138,6 +141,7 @@ public class DynamoDbService implements JobStore {
         item.put("id", text(job.id()));
         item.put("sourceMessageId", text(job.sourceMessageId()));
         item.put("receivedAt", text(job.receivedAt().toString()));
+        item.put("expiresAt", number(job.receivedAt().plus(JOB_TTL_DAYS, ChronoUnit.DAYS).getEpochSecond()));
         item.put("title", text(job.details().title()));
         item.put("description", text(job.details().description()));
         putOptional(item, "company", job.details().company());
@@ -164,6 +168,10 @@ public class DynamoDbService implements JobStore {
 
     private static AttributeValue text(String value) {
         return AttributeValue.builder().s(value).build();
+    }
+
+    private static AttributeValue number(long value) {
+        return AttributeValue.builder().n(Long.toString(value)).build();
     }
 
     private static void putOptional(Map<String, AttributeValue> item, String field, String value) {

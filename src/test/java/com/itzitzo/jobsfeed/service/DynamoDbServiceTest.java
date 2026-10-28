@@ -29,7 +29,23 @@ class DynamoDbServiceTest {
         assertEquals("EMAIL#message", writes.get(0).put().item().get("pk").s());
         assertEquals("FEED#jobs", writes.get(1).put().item().get("pk").s());
         assertEquals(job.sortKey(), writes.get(1).put().item().get("sk").s());
+        assertFalse(writes.get(0).put().item().containsKey("expiresAt"));
+        assertEquals("1794484800", writes.get(1).put().item().get("expiresAt").n());
         verify(client, never()).putItem(any(PutItemRequest.class));
+    }
+
+    @Test
+    void includesTtlForDirectSavedItems() {
+        DynamoDbClient client = mock(DynamoDbClient.class);
+        DynamoDbService store = new DynamoDbService(client, "jobs");
+        long before = Instant.now().getEpochSecond();
+        store.saveJob("job", "1", "{}");
+        long after = Instant.now().getEpochSecond();
+        ArgumentCaptor<PutItemRequest> request = ArgumentCaptor.forClass(PutItemRequest.class);
+        verify(client).putItem(request.capture());
+        long expiresAt = Long.parseLong(request.getValue().item().get("expiresAt").n());
+        assertTrue(expiresAt >= before + 21L * 24 * 60 * 60);
+        assertTrue(expiresAt <= after + 21L * 24 * 60 * 60 + 1);
     }
 
     @Test
