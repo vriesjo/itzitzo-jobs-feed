@@ -751,7 +751,7 @@ sequenceDiagram
     Renderer->>XML: XML declaration, rss 2.0 and channel
     Renderer->>XML: Title, website, description and atom self-link
     loop Each job in query order
-        Renderer->>XML: Item title and plain-text description
+        Renderer->>XML: Item title, optional itzitzo:company extension, and description
         opt Application URL exists
             Renderer->>XML: Item link
         end

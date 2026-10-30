@@ -23,12 +23,13 @@ class RssFeedTest {
     @Test
     void rendersParseableRssWithEscapingUnicodeStableGuidsAndDates() throws Exception {
         Job job = Job.fromEmail("private-message-id", Instant.parse("2026-10-22T12:00:00Z"), 0,
-            new JobDetails("Java & <Cloud> \u20ac", null, null, "Build <services>\u0001",
+            new JobDetails("Java & <Cloud> \u20ac", "Example & Company", null, "Build <services>\u0001",
                 "https://example.com/job?a=1&b=2", null));
         String xml = renderer.render(List.of(job));
         Document document = parse(xml);
         assertEquals("rss", document.getDocumentElement().getTagName());
         assertEquals("Java & <Cloud> \u20ac", document.getElementsByTagName("title").item(1).getTextContent());
+        assertEquals("Example & Company", document.getElementsByTagName("itzitzo:company").item(0).getTextContent());
         assertEquals("Build <services>\ufffd", document.getElementsByTagName("description").item(1).getTextContent());
         assertEquals("false", document.getElementsByTagName("guid").item(0).getAttributes()
             .getNamedItem("isPermaLink").getNodeValue());

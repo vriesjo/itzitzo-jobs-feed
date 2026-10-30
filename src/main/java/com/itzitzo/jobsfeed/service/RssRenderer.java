@@ -11,6 +11,7 @@ import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamWriter;
 
 public class RssRenderer {
+    private static final String ITZITZO_NAMESPACE = "https://itzitzo.nl/ns/rss";
     private final String title;
     private final String description;
     private final String websiteUrl;
@@ -31,6 +32,7 @@ public class RssRenderer {
             xml.writeStartElement("rss");
             xml.writeAttribute("version", "2.0");
             xml.writeNamespace("atom", "http://www.w3.org/2005/Atom");
+            xml.writeNamespace("itzitzo", ITZITZO_NAMESPACE);
             xml.writeStartElement("channel");
             element(xml, "title", title);
             element(xml, "link", websiteUrl);
@@ -43,6 +45,11 @@ public class RssRenderer {
             for (Job job : jobs) {
                 xml.writeStartElement("item");
                 element(xml, "title", job.details().title());
+                if (job.details().company() != null) {
+                    xml.writeStartElement("itzitzo", "company", ITZITZO_NAMESPACE);
+                    characters(xml, job.details().company());
+                    xml.writeEndElement();
+                }
                 element(xml, "description", job.details().description());
                 if (job.details().applicationUrl() != null) {
                     element(xml, "link", job.details().applicationUrl());
@@ -68,12 +75,16 @@ public class RssRenderer {
 
     private static void element(XMLStreamWriter xml, String name, String value) throws XMLStreamException {
         xml.writeStartElement(name);
+        characters(xml, value);
+        xml.writeEndElement();
+    }
+
+    private static void characters(XMLStreamWriter xml, String value) throws XMLStreamException {
         StringBuilder safe = new StringBuilder();
         value.codePoints().forEach(code -> safe.appendCodePoint(
             code == 0x9 || code == 0xA || code == 0xD || (code >= 0x20 && code <= 0xD7FF)
                 || (code >= 0xE000 && code <= 0xFFFD) || (code >= 0x10000 && code <= 0x10FFFF)
                 ? code : 0xFFFD));
         xml.writeCharacters(safe.toString());
-        xml.writeEndElement();
     }
 }
