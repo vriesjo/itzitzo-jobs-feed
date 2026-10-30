@@ -127,7 +127,7 @@ public class BedrockService implements BedrockGateway, JobExtractor {
 
     private static String firstJsonObject(String response) {
         if (response == null) {
-            return "";
+        return "";
         }
         for (int start = response.indexOf('{'); start >= 0; start = response.indexOf('{', start + 1)) {
             int end = matchingObjectEnd(response, start);

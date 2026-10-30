@@ -54,9 +54,46 @@ class S3EmailReaderTest {
             Content-Type: text/html; charset=UTF-8
 
             <style>hidden style</style><script>secret script</script>
-            <p>Build Java &amp; AWS services.</p><img src="https://example.invalid/tracker">
+            <p>Build Java &amp; AWS services.</p>
+            <a href="https://freelance.nl/jobs/123">Bekijk opdracht</a>
+            <a href="javascript:alert(1)">unsafe link</a>
             """);
-        assertEquals("Build Java & AWS services.", text);
+        assertTrue(text.startsWith("Build Java & AWS services. Bekijk opdracht unsafe link"));
+        assertTrue(text.contains("Link: Bekijk opdracht | URL: https://freelance.nl/jobs/123"));
+        assertFalse(text.contains("javascript:"));
+    }
+
+    @Test
+    void preservesHtmlLinksWhenPreferringPlainTextMultipartAlternative() {
+        String text = parse("""
+            MIME-Version: 1.0
+            Content-Type: multipart/alternative; boundary=alt
+
+            --alt
+            Content-Type: text/plain; charset=UTF-8
+
+            Bekijk alle matches
+            --alt
+            Content-Type: text/html; charset=UTF-8
+
+            <a href="https://freelance.nl/jobs/123">Bekijk alle matches</a>
+            --alt--
+            """);
+        assertTrue(text.startsWith("Bekijk alle matches"));
+        assertTrue(text.contains("Link: Bekijk alle matches | URL: https://freelance.nl/jobs/123"));
+    }
+
+    @Test
+    void joinsQuotedPrintableSoftLineBreaksInsideUrls() {
+        String text = parse("""
+            Content-Type: text/plain; charset=UTF-8
+
+            Bekijk opdracht:
+            https://webmail.freelance.nl/e3t/first-part=
+            second-part
+            """);
+        assertTrue(text.contains("https://webmail.freelance.nl/e3t/first-partsecond-part"));
+        assertFalse(text.contains("first-part=\n"));
     }
 
     @Test

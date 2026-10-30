@@ -52,4 +52,23 @@ class EmailIngestionServiceTest {
         assertEquals(new EmailIngestionService.Result(0, true), concurrent.ingest("message", Instant.now()));
         verify(store).saveIngestion("message", List.of());
     }
+
+    @Test
+    void usesJobsPageAsFallbackAndPreservesExtractedApplicationUrls() throws Exception {
+        try (AutoCloseable ignored = MockitoAnnotations.openMocks(this)) {
+            JobStore store = mock(JobStore.class);
+            JobDetails withoutUrl = new JobDetails("Java Developer", null, null, "Build services.", null, null);
+            JobDetails withUrl = new JobDetails(
+                "Data Engineer", null, null, "Build data services.", "https://freelance.nl/jobs/456", null);
+            when(store.saveIngestion(anyString(), anyList())).thenReturn(true);
+            EmailIngestionService service = new EmailIngestionService(
+                id -> "email", text -> List.of(withoutUrl, withUrl), store);
+
+            service.ingest("message", Instant.parse("2026-10-22T12:00:00Z"));
+
+            verify(store).saveIngestion(eq("message"), jobs.capture());
+            assertEquals("https://itzitzo.nl/jobs/", jobs.getValue().get(0).details().applicationUrl());
+            assertEquals("https://freelance.nl/jobs/456", jobs.getValue().get(1).details().applicationUrl());
+        }
+    }
 }

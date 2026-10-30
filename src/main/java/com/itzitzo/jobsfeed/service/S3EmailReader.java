@@ -8,6 +8,8 @@ import jakarta.mail.Session;
 import jakarta.mail.internet.MimeMessage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,6 +17,7 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -67,6 +70,9 @@ public class S3EmailReader implements EmailReader {
             }
             String subject = message.getSubject();
             String text = (subject == null ? "" : "Subject: " + subject + "\n\n") + body.text();
+            if (!body.links().isEmpty()) {
+                text += "\n\nLinks:\n" + String.join("\n", body.links().stream().distinct().toList());
+            }
             if (text.getBytes(StandardCharsets.UTF_8).length > MAX_TEXT_BYTES) {
                 throw new IllegalArgumentException("Email exceeds normalized text limit");
             }
@@ -81,15 +87,23 @@ public class S3EmailReader implements EmailReader {
             throw new IllegalArgumentException("Email exceeds MIME complexity limit");
         }
         if (Part.ATTACHMENT.equalsIgnoreCase(part.getDisposition()) || part.getFileName() != null) {
-            return new Body("", false);
+            return new Body("", false, List.of());
         }
         if (part.isMimeType("text/plain")) {
-            return new Body((String) part.getContent(), true);
+            return new Body(unfoldQuotedPrintable((String) part.getContent()), true, List.of());
         }
         if (part.isMimeType("text/html")) {
-            Document document = Jsoup.parse((String) part.getContent());
+            Document document = Jsoup.parse(unfoldQuotedPrintable((String) part.getContent()));
             document.select("script,style,noscript,template").remove();
-            return new Body(document.text(), false);
+            List<String> links = new ArrayList<>();
+            for (Element link : document.select("a[href]")) {
+                String url = link.attr("href").trim();
+                if (isHttpUrl(url)) {
+                    String label = link.text().strip();
+                    links.add("Link: " + (label.isEmpty() ? url : label) + " | URL: " + url);
+                }
+            }
+            return new Body(document.text(), false, links);
         }
         if (part.isMimeType("multipart/*")) {
             Multipart multipart = (Multipart) part.getContent();
@@ -102,14 +116,31 @@ public class S3EmailReader implements EmailReader {
                 }
             }
             if (part.isMimeType("multipart/alternative")) {
-                return children.stream().filter(Body::plain).findFirst()
-                    .orElseGet(() -> children.isEmpty() ? new Body("", false) : children.get(0));
+                Body preferred = children.stream().filter(Body::plain).findFirst()
+                    .orElseGet(() -> children.isEmpty() ? new Body("", false, List.of()) : children.get(0));
+                return new Body(preferred.text(), preferred.plain(),
+                    children.stream().flatMap(child -> child.links().stream()).toList());
             }
-            return new Body(String.join("\n\n", children.stream().map(Body::text).toList()), false);
+            return new Body(String.join("\n\n", children.stream().map(Body::text).toList()), false,
+                children.stream().flatMap(child -> child.links().stream()).toList());
         }
-        return new Body("", false);
+        return new Body("", false, List.of());
     }
 
-    private record Body(String text, boolean plain) {
+    private static boolean isHttpUrl(String value) {
+        try {
+            URI uri = new URI(value);
+            return ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
+                && uri.getHost() != null && uri.getUserInfo() == null;
+        } catch (URISyntaxException e) {
+            return false;
+        }
+    }
+
+    private static String unfoldQuotedPrintable(String value) {
+        return value.replace("=\r\n", "").replace("=\n", "").replace("=\r", "");
+    }
+
+    private record Body(String text, boolean plain, List<String> links) {
     }
 }
