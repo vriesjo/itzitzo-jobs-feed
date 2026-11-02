@@ -39,6 +39,9 @@ public class BedrockService implements BedrockGateway, JobExtractor {
     - location: Extract the geographical location or region (e.g., 'Utrecht', 'Gelderland').
     - description: Include relevant details like rate, hours per week, or summary text if available.
     - applicationUrl: Must be an absolute http/https URL if present in the text/links; otherwise, set to null rather than inventing one.
+    - If the input contains "Links:" lines in the format "Link: ... | URL: ...", copy the exact value after "URL:".
+    - Keep full URLs unchanged, including query parameters and percent-encoding.
+    - LinkedIn links like https://www.linkedin.com/comm/jobs/view/... are valid application URLs.
 
     Rules for Field Values:
     - title: required nonblank string.

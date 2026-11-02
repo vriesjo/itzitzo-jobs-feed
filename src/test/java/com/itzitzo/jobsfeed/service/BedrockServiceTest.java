@@ -33,6 +33,7 @@ class BedrockServiceTest {
         assertEquals("eu.amazon.nova-micro-v1:0", request.getValue().modelId());
         assertEquals("Email \"body\"\nwith newlines", request.getValue().messages().get(0).content().get(0).text());
         assertTrue(request.getValue().system().get(0).text().contains("untrusted"));
+        assertTrue(request.getValue().system().get(0).text().contains("copy the exact value after \"URL:\""));
         assertEquals(0.0f, request.getValue().inferenceConfig().temperature());
     }
 
