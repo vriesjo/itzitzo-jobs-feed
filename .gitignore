@@ -9,6 +9,7 @@
 # BlueJ files
 *.ctxt
 *.txt
+!src/test/resources/bedrock-evals/**/*.txt
 
 # Mobile Tools for Java (J2ME)
 .mtj.tmp/

@@ -37,7 +37,22 @@ dependencies {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags 'bedrock-eval'
+    }
+}
+
+tasks.register('bedrockEval', Test) {
+    description = 'Score the bedrock-evals fixtures against a live Nova model.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'bedrock-eval'
+    }
+    systemProperty 'BEDROCK_MODEL_ID', System.getenv('BEDROCK_MODEL_ID') ?: 'eu.amazon.nova-micro-v1:0'
+    systemProperty 'AWS_REGION', System.getenv('AWS_REGION') ?: 'eu-west-1'
+    shouldRunAfter tasks.test
 }
 
 tasks.shadowJar {

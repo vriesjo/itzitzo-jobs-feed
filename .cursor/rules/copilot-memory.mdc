@@ -1,0 +1,15 @@
+---
+description: Follow AGENTS.md and the docs plus .github/memory bank for Stockio feature work
+alwaysApply: true
+---
+
+# Repository memory and agent workflow
+
+- Follow the rules and lifecycle in `AGENTS.md` at the project root.
+- Use these files as the source of truth for feature work:
+  - `docs/architecture.md`
+  - `.github/memory/active-context.md`
+  - `.github/memory/issues/`
+  - `.github/memory/tasks/lessons-learned.md`
+- Inspect those files before making assumptions about architecture or in-progress work.
+- Keep memory docs synchronized when behavior or feature scope changes.

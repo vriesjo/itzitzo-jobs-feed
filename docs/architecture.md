@@ -428,7 +428,7 @@ job-write, or inference routes.
 
 The default allowlisted email is `vriesjo@gmail.com`. The comparison is exact and case-sensitive. The token value is not trimmed. On success the handler calls `ContactMessageSink.submit` and returns HTTP 202 with `text/plain`. The composition root's sink logs `event=contact_received` with the email and subject length, and the handler then logs `event=contact_accepted` with the same metadata. Logs omit the token and the message body. A blank configuration logs `event=contact_rejected code=misconfigured`. A failed email or token check logs `event=contact_rejected code=forbidden`.
 
-The token is the sensitive Terraform variable `contact_token`, passed as the Lambda environment variable `CONTACT_TOKEN`. Application code does not embed it. The variable defaults to empty, so an apply without a token leaves the route returning 503. Secrets Manager is not wired; the constructor reads the environment once per execution environment, which is the seam a later secret source would replace. AWS WAF is not associated with the API. Add it only after alarm data shows abuse that stage throttling does not contain.
+The token is the sensitive Terraform variable `contact_token`, passed as the Lambda environment variable `CONTACT_TOKEN`. Application code does not embed it, and the checked-in tfvars do not contain it. CI sets `TF_VAR_contact_token` from the `CONTACT_TOKEN` secret on the GitHub environment `production`. The variable defaults to empty, so an apply without a token leaves the route returning 503. The plan and apply jobs fail before Terraform when that secret is missing. Secrets Manager is not wired; the constructor reads the environment once per execution environment, which is the seam a later secret source would replace. AWS WAF is not associated with the API. Add it only after alarm data shows abuse that stage throttling does not contain.
 
 ### Event and extraction request shapes
 
@@ -1076,7 +1076,7 @@ line written by the contact sink.
 | `FEED_PUBLIC_URL` | Generated API endpoint plus `/feed.xml` | Atom self-link and default channel website. |
 | `FEED_WEBSITE_URL` / `feed_website_url` | Feed URL unless explicitly configured | RSS channel website link. |
 | `CONTACT_ALLOWED_EMAIL` / `contact_allowed_email` | `vriesjo@gmail.com` | Exact, case-sensitive sender accepted by `POST /contact`. |
-| `CONTACT_TOKEN` / `contact_token` | Empty sensitive Terraform variable | Shared secret required in `X-Contact-Token`. Blank fails closed with HTTP 503. |
+| `CONTACT_TOKEN` / `contact_token` | `TF_VAR_contact_token` from GitHub secret `CONTACT_TOKEN`; tfvars default is empty | Shared secret required in `X-Contact-Token`. Blank fails closed with HTTP 503. |
 | `enable_ses_receipt_rule` | `false` | Opt in to receipt rule and SES delivery/invoke permissions. |
 | `ses_receipt_rule_set_name` | Empty; required when enabled | Existing reviewed SES rule set; not activated by Terraform. |
 | `ses_recipient` | Empty; required when enabled | Single receiving email address. |
@@ -1124,10 +1124,12 @@ validation and prompt instructions are not a guarantee that AI-generated content
 is factually correct or free of private text. Protect raw email, failure records,
 logs, direct Lambda invocation, the contact token, and Terraform state with IAM.
 
-Rotate `contact_token` by changing that sensitive variable in the target tfvars
-file and applying Terraform. The workflow's later `update-function-code` publish
+Rotate the contact token by replacing the `CONTACT_TOKEN` secret on the
+GitHub environment `production` and applying Terraform. Do not write the new
+value into tfvars. The workflow's later `update-function-code` publish
 replaces the zip and leaves the new environment in place. Requests that still
-send the previous token receive HTTP 403.
+send the previous token receive HTTP 403. The previous value remains in git
+history until it is rotated in Lambda.
 
 Failure alarms use five-minute sum periods, a threshold above zero, and missing
 data treated as not breaching. API Gateway alarms use the same period and
@@ -1190,6 +1192,7 @@ GitHub configuration for the workflow is:
 | Setting | Value | Role |
 | --- | --- | --- |
 | Secret `AWS_ROLE_ARN` | ARN of `github-actions-itzitzo-jobs-feed` | Role assumed by plan and apply. |
+| Secret `CONTACT_TOKEN` | Rotated contact shared secret on environment `production` | Becomes `TF_VAR_contact_token`. Required before plan or apply. |
 | Variable `AWS_REGION` | `eu-west-1` when unset in the workflow | Must match the target tfvars region. |
 | Variable `TF_STATE_BUCKET` | Required; this account uses `itzitzo-jobs-feed-tfstate-607399097622` | Encrypted S3 backend. The workflow rejects a run when it is unset. |
 | Environment `production` | Used by plan and apply | Holds the AWS secret and variable access. Required reviewers are a repository setting, not a workflow condition. |
@@ -1233,7 +1236,11 @@ allowlisted email plus matching token, HTTP 401 when the token header is missing
 HTTP 403 for a different email or token, and HTTP 400 or 405 for an invalid
 payload or method. Those rejected cases assert that the sink receives no message.
 AWS SDK clients are mocked or replaced with test stores; these are not live
-SES delivery, Bedrock quality, or API Gateway throttle tests.
+SES delivery or API Gateway throttle tests. Canned responses under
+`src/test/resources/bedrock-evals/` score `parseJobs` on every `./gradlew test`.
+`./gradlew bedrockEval` sends the same fixture emails through Nova three times.
+Set `BEDROCK_MODEL_ID` to `eu.amazon.nova-lite-v1:0` for the Lite comparison.
+That task needs AWS credentials and is excluded from the default test run.
 
 After provider initialization, run the infrastructure scenarios with:
 

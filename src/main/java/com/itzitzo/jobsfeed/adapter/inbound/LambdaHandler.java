@@ -28,13 +28,11 @@ public class LambdaHandler implements RequestHandler<Map<String, Object>, Map<St
     private final HttpFeedHandler feed;
 
     public LambdaHandler() {
-        String region = requiredEnv("AWS_REGION");
-        String modelId = requiredEnv("BEDROCK_MODEL_ID");
-        String tableName = requiredEnv("DYNAMODB_TABLE_NAME");
-        BedrockService bedrock = new BedrockService(AwsClientsConfig.bedrockClient(region), modelId);
+        EnvContext envContext = getEnvContext();
+        BedrockService bedrock = new BedrockService(AwsClientsConfig.bedrockClient(envContext.region()), envContext.modelId());
         this.bedrockGateway = bedrock;
-        this.jobStore = new DynamoDbService(AwsClientsConfig.dynamoDbClient(region), tableName);
-        this.ingestion = new EmailIngestionService(new S3EmailReader(AwsClientsConfig.s3Client(region),
+        this.jobStore = new DynamoDbService(AwsClientsConfig.dynamoDbClient(envContext.region()), envContext.tableName());
+        this.ingestion = new EmailIngestionService(new S3EmailReader(AwsClientsConfig.s3Client(envContext.region()),
             requiredEnv("EMAIL_BUCKET_NAME"), requiredEnv("EMAIL_OBJECT_PREFIX")), bedrock, jobStore);
         ContactRequestHandler contact = new ContactRequestHandler(
             envOrBlank("CONTACT_ALLOWED_EMAIL"),
@@ -52,6 +50,15 @@ public class LambdaHandler implements RequestHandler<Map<String, Object>, Map<St
         this.ingestion = ingestion;
         this.feed = feed;
     }
+
+    public EnvContext getEnvContext() {
+        String region = requiredEnv("AWS_REGION");
+        String modelId = requiredEnv("BEDROCK_MODEL_ID");
+        String tableName = requiredEnv("DYNAMODB_TABLE_NAME");
+        return new EnvContext(region, modelId, tableName);
+    }
+
+    private record EnvContext(String region, String modelId, String tableName){}
 
     @Override
     public Map<String, Object> handleRequest(Map<String, Object> input, Context context) {

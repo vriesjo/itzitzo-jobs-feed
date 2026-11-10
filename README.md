@@ -75,11 +75,13 @@ terraform init \
   -backend-config="bucket=itzitzo-jobs-feed-tfstate-607399097622" \
   -backend-config="key=itzitzo-jobs-feed/dev.tfstate" \
   -backend-config="region=eu-west-1"
-terraform plan -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/deploy/lambda.zip"
-terraform apply -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/deploy/lambda.zip"
+TF_VAR_contact_token='your-rotated-token' \
+  terraform plan -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/deploy/lambda.zip"
+TF_VAR_contact_token='your-rotated-token' \
+  terraform apply -var-file=envs/dev.tfvars -var="lambda_artifact_path=../build/deploy/lambda.zip"
 ```
 
-`lambda_artifact_path` points to the zip produced in CI (`build/deploy/lambda.zip`).
+`lambda_artifact_path` points to the zip produced in CI (`build/deploy/lambda.zip`). Do not put `contact_token` in the tfvars files. Export `TF_VAR_contact_token` for a local plan or apply. An empty value would deploy a blank `CONTACT_TOKEN` and make `POST /contact` return 503.
 
 Infrastructure checks that do not create AWS resources:
 
@@ -92,7 +94,7 @@ The Terraform tests use a mocked AWS provider and require the deployment ZIP to 
 
 ## Email-to-RSS configuration
 
-Both environment files select `eu.amazon.nova-micro-v1:0`. Nova Lite can be selected with `eu.amazon.nova-lite-v1:0`; evaluate both on representative fixtures before choosing the production model. Requests use Bedrock Converse, not Titan's `inputText` format.
+Both environment files select `eu.amazon.nova-micro-v1:0`. Nova Lite can be selected with `eu.amazon.nova-lite-v1:0`. `./gradlew test` scores canned responses in `src/test/resources/bedrock-evals/` through `parseJobs`. `./gradlew bedrockEval` scores those same emails against a live model three times per case; set `BEDROCK_MODEL_ID=eu.amazon.nova-lite-v1:0` to compare Lite. The live task needs AWS credentials and is not part of the default test run. Requests use Bedrock Converse, not Titan's `inputText` format.
 
 Confirm the inference profile is available from the deployment region and review its cross-region destinations before sending real email content. IAM is scoped to the selected standard model and profile; custom model/profile ARNs require an explicit `bedrock_resource_arns` list including the underlying models. There is no automatic model fallback.
 
@@ -196,6 +198,7 @@ In GitHub repository settings:
 
 - **Secrets and variables → Actions → Secrets**
   - `AWS_ROLE_ARN`: ARN of the IAM role from step 1
+  - `CONTACT_TOKEN`: rotated shared secret for `X-Contact-Token`. Create this on the `production` environment before the first plan or apply that uses this workflow. Dev and prod share this one secret. The workflow fails closed when it is missing.
 
 - **Secrets and variables → Actions → Variables**
   - `AWS_REGION`: e.g. `eu-west-1`
@@ -208,7 +211,7 @@ If a previous run created resources without persistent state, import those resou
 ### 3) Configure protected environment (recommended)
 
 The plan and apply jobs use GitHub environment `production`.
-Create environment `production` in repository settings and add required reviewers if you want approval gates before AWS access.
+Create environment `production` in repository settings and add required reviewers if you want approval gates before AWS access. Store `CONTACT_TOKEN` on that environment before applying. A push to `main` applies prod, so the secret must exist before that push.
 
 ### 4) Trigger deployment
 
