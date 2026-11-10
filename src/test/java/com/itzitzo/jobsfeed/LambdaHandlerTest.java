@@ -4,6 +4,7 @@ import com.itzitzo.jobsfeed.service.BedrockGateway;
 import com.itzitzo.jobsfeed.model.Job;
 import com.itzitzo.jobsfeed.model.JobDetails;
 import com.itzitzo.jobsfeed.service.EmailIngestionService;
+import com.itzitzo.jobsfeed.service.FeedPage;
 import com.itzitzo.jobsfeed.service.HttpFeedHandler;
 import com.itzitzo.jobsfeed.service.JobStore;
 import com.itzitzo.jobsfeed.service.RssRenderer;
@@ -247,7 +248,17 @@ class LambdaHandlerTest {
 
         @Override
         public List<Job> recentJobs(int limit) {
-            return jobs.stream().sorted(java.util.Comparator.comparing(Job::sortKey).reversed()).limit(limit).toList();
+            return recentJobPage(limit, null).jobs();
+        }
+
+        @Override
+        public FeedPage recentJobPage(int limit, String exclusiveSortKey) {
+            List<Job> ordered = jobs.stream()
+                .sorted(java.util.Comparator.comparing(Job::sortKey).reversed())
+                .filter(job -> exclusiveSortKey == null || job.sortKey().compareTo(exclusiveSortKey) < 0)
+                .toList();
+            List<Job> page = ordered.stream().limit(limit).toList();
+            return new FeedPage(page, ordered.size() > page.size());
         }
     }
 }

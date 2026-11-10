@@ -16,21 +16,27 @@ One Lambda application handles two independent event paths:
 1. An SES receipt rule stores the raw email in S3, then invokes Lambda asynchronously.
    The application parses MIME, extracts structured jobs using Nova, and atomically
    writes jobs and a processed-message marker to DynamoDB.
-2. API Gateway invokes the same Lambda synchronously for `GET /feed.xml`.
-   The application queries the latest jobs, renders RSS XML, and returns HTTP 200.
+2. API Gateway invokes the same Lambda synchronously for HTTP API v2 events.
+   `GET /feed.xml` queries the latest jobs, renders RSS XML, and returns HTTP 200.
+   `POST /contact` checks the JSON payload, the allowlisted sender email, and
+   `X-Contact-Token`, then returns HTTP 202. An accepted contact message is logged.
+   The handler does not store, email, or queue it.
 
 - DynamoDB is the source of truth for published feed records and completed-message markers.
-- S3 retains raw email for recovery; it is not queried when serving RSS.
-- Bedrock is called during ingestion, never during an RSS request.
+- S3 retains raw email for recovery. RSS and contact requests do not read it.
+- Bedrock is called during ingestion. RSS and contact requests do not call it.
 - A Lambda asynchronous failure destination captures failed invocations in SQS;
   SQS is not an ingestion trigger or application-managed worker queue.
 - Internal direct-invocation actions remain available to authorized Lambda callers,
   but cannot be selected through HTTP.
 
 This document describes the implemented source and Terraform configuration, not
-an assertion that every resource or SES route is already deployed. SES integration
-is disabled by default. Live email acceptance and Nova Micro/Lite evaluation
-remain rollout tasks.
+an assertion that every resource or SES route is already deployed. The Terraform
+default leaves SES integration disabled. The checked-in dev and prod tfvars opt in
+for `jobs@itzitzo.nl` on the existing `INBOUND_MAIL` rule set; Terraform still does
+not activate that rule set or change DNS. Live email acceptance and Nova Micro/Lite
+evaluation remain rollout tasks. The contact route is part of the default API.
+It returns HTTP 503 until `contact_token` is set.
 
 ### Design Patterns
 
@@ -59,7 +65,7 @@ or independently deployed Java services:
 | --- | --- |
 | `src/main/java/com/itzitzo/jobsfeed/LambdaHandler.java` | Lambda composition root and inbound event router. |
 | `model/` | SES metadata, validated job details, deterministic IDs, and sort keys. |
-| `service/` | Ingestion, MIME/S3 reading, Nova extraction, DynamoDB storage, HTTP responses, and RSS rendering. |
+| `service/` | Ingestion, MIME/S3 reading, Nova extraction, DynamoDB storage, HTTP responses, contact validation, and RSS rendering. |
 | `config/AwsClientsConfig.java` | AWS SDK v2 clients and request timeouts. |
 | `src/test/` | Routing, ingestion, extraction, persistence, MIME, and RSS behavior checks. |
 | `infra/` | Terraform resources, environment values, persistent state configuration, and mocked infrastructure scenarios. |
@@ -81,6 +87,7 @@ flowchart LR
     SES -->|"1. Store raw MIME"| S3[("Private email S3 bucket")]
     SES -->|"2. Async receipt event"| Runtime["AWS Lambda runtime"]
     Reader["RSS reader / HTTP client"] -->|"GET /feed.xml"| API["API Gateway HTTP API"]
+    ContactClient["Contact client"] -->|"POST /contact"| API
     API -->|"Synchronous HTTP v2 event"| Runtime
     Runtime --> App["Jobs feed application"]
     Operator["Authorized operator"] -->|"Direct invocation"| Runtime
@@ -92,21 +99,117 @@ flowchart LR
     Runtime -->|"Failed async invocation record"| Queue[("SQS failure destination")]
 ```
 
-The feed endpoint is public and has no application authentication. Lambda invoke
-permissions scope API Gateway and SES access to their intended resources.
+The feed endpoint is public and has no application authentication. The contact
+endpoint is on the same public API. It accepts a message only after the payload,
+allowlisted email, and `X-Contact-Token` checks pass, and a rejected request
+returns before any sink call. Lambda invoke permissions scope API Gateway to
+`/feed.xml` and `/contact` separately, and scope SES to the function when the
+receipt rule is enabled.
 Operators need IAM permission for direct actions and replay. Domain identity,
 MX routing, an existing SES receipt rule set, and GitHub's OIDC role are external
 prerequisites rather than resources automatically activated by this application.
+
+## Security boundaries
+
+`vriesjo@gmail.com` is the contact allowlist. It is not a sender check on the
+mail path, and an accepted contact message does not become a feed item. Mail
+that can reach DynamoDB is mail addressed to `jobs@itzitzo.nl`.
+
+### Receiving mail
+
+The receipt rule is the gate in front of S3 and Lambda.
+
+| Rule | Where it is enforced |
+| --- | --- |
+| Only `jobs@itzitzo.nl` is an ingestion recipient. | SES receipt rule `recipients`. |
+| SMTP must use TLS. | Receipt rule `tls_policy = Require`. |
+| SES spam and virus scanning runs before the Lambda action. | Receipt rule `scan_enabled = true`. |
+| Spam, virus, and DMARC must be `PASS`, and SPF or DKIM must be `PASS`. | `SesMessage.parseRecords`, before any S3 read or Nova call. A missing, failed, gray, or error verdict is rejected. |
+| The SES message id must match `[A-Za-z0-9_-]{1,256}`. | `SesMessage.parseRecords`. The reader then fetches `incoming/<messageId>`. |
+| The raw-mail bucket is private. | Public access block, SSE-S3, and a bucket policy that allows `s3:PutObject` only for `ses.amazonaws.com`, this account, this receipt-rule ARN, and the `incoming/` prefix. |
+| Only that receipt rule may invoke the function for mail. | `AllowSesReceipt`, scoped to the rule ARN and this account. |
+
+A verdict rejection throws. Lambda retries, and the message is not written to
+`FEED#jobs`. SES has already stored the raw MIME, because the S3 action is
+position 1 and the Lambda action is position 2. That object expires after 30
+days. The extraction prompt tells Nova to omit sender, recipient, and private
+correspondence; publication still depends on the model obeying that instruction
+and on `JobDetails` field validation.
+
+There is no sender allowlist. Any server that can deliver to `jobs@itzitzo.nl`
+and pass TLS, SES scanning, and the verdict rule is ingested. Mail reaches this
+rule only when the existing `INBOUND_MAIL` rule set is active and `itzitzo.nl`
+MX already points at SES. Terraform does not change that DNS or activate the
+rule set.
+
+### Publishing the feed
+
+`GET /feed.xml` is public. Readers are not authenticated.
+
+| Rule | Where it is enforced |
+| --- | --- |
+| The public method is `GET /feed.xml`. | HTTP API route and `HttpFeedHandler`. Other methods return 405. Other paths return 404. |
+| An HTTP event cannot select `saveJob`, `getJob`, `bedrockInvoke`, or ingestion. | `LambdaHandler` sends every HTTP-shaped event to `HttpFeedHandler`. |
+| A feed request reads DynamoDB and renders XML. | Pages of `pk=FEED#jobs`, collapsed to 50 unique vacancies. The request does not read S3 or call Nova. |
+| RSS omits the raw message, sender addresses, and `sourceMessageId`. | `RssRenderer`. |
+| DynamoDB is not a public endpoint. | The Lambda execution role is the reader. API Gateway returns the rendered XML. |
+| The stage throttles every route at 10 requests per second, burst 20. | `aws_apigatewayv2_stage.feed` default route settings. See [Admission control](#admission-control). |
+| Error, volume, and throttle spikes alarm. | API Gateway alarms on `4XXError`, `5XXError`, `Count`, and `Throttles`. |
+
+A job that has been published is world-readable at `feed_url`. Throttling and
+alarms bound request volume and cost. They do not hide the document. The way to
+keep a message out of the feed is to stop it at the receipt rule or the verdict
+check before `saveIngestion` commits.
+
+### Admission control
+
+Terraform admits public HTTP calls through the stage throttle on
+`aws_apigatewayv2_stage.feed`. The `$default` stage sets `default_route_settings`
+and neither `/feed.xml` nor `/contact` overrides them, so both routes share one
+bucket:
+
+| Setting | Value | Effect |
+| --- | --- | --- |
+| `throttling_rate_limit` | 10 | Steady refill of 10 requests per second for the whole API. |
+| `throttling_burst_limit` | 20 | At most 20 tokens may accumulate. A burst above that is rejected. |
+| Integration `timeout_milliseconds` | 15000 | API Gateway stops waiting on Lambda after 15 seconds. |
+
+The numbers are literals in `infra/api.tf`. They are not tfvars. API Gateway
+enforces the throttle before it invokes Lambda and returns HTTP 429. The
+application has no 429 branch. A throttled feed or contact call does not query
+DynamoDB, render RSS, or run the contact checks.
+
+The same stage has alarms, which observe admission rather than decide it. Each
+uses a five-minute sum, one evaluation period, `GreaterThanThreshold`, and
+`treat_missing_data = notBreaching`.
+
+| Alarm | Metric | Threshold variable | Default |
+| --- | --- | --- | --- |
+| `${name_prefix}-api-4XXError` | `4XXError` | `api_alarm_4xx_threshold` | 25 |
+| `${name_prefix}-api-5XXError` | `5XXError` | `api_alarm_5xx_threshold` | 1 |
+| `${name_prefix}-api-count` | `Count` | `api_alarm_count_threshold` | 500 |
+| `${name_prefix}-api-throttles` | `Throttles` | `api_alarm_throttle_threshold` | 10 |
+
+This stack does not set Lambda reserved concurrency, a per-route throttle, an
+API key or usage plan, or a WAF rate-based rule. Account-level Lambda
+concurrency remains the platform cap. Asynchronous ingestion is bounded
+separately by `maximum_retry_attempts = 2` and `maximum_event_age_in_seconds = 3600`
+on the function's event invoke config. Those settings limit retry of mail
+events. They do not throttle `GET /feed.xml`.
+
+Application checks still refuse a call the gateway has already admitted: the
+feed method and path rules, the contact token and payload rules, and the SES
+verdict rule. Those are request gates, not rate limits.
 
 ## C4 - level 3 component diagram
 
 This level-3 view opens the Java Lambda application into its code components:
 
-- **Inbound adapters** distinguish SES, HTTP API v2, and internal direct actions.
-- **Application services** orchestrate ingestion or feed delivery.
+- **Inbound adapters** distinguish SES, HTTP API v2, contact validation, and internal direct actions.
+- **Application services** orchestrate ingestion, feed delivery, or contact acceptance.
 - **Domain models and policies** validate input and define publication identity.
-- **Outbound ports** describe email reading, extraction, persistence, and direct inference.
-- **Outbound adapters** implement those ports with AWS SDK clients and parsing libraries.
+- **Outbound ports** describe email reading, extraction, persistence, direct inference, and contact submission.
+- **Outbound adapters** implement those ports with AWS SDK clients, parsing libraries, and the contact log sink.
 
 These are logical boundaries in one application, not enforced modules. The
 default handler constructor knows concrete adapters, and the Bedrock adapter
@@ -123,6 +226,7 @@ flowchart LR
             Router["LambdaHandler<br/>Event detection and composition"]
             SesValidation["SesMessage.parseRecords<br/>Source, metadata and verdict validation"]
             Http["HttpFeedHandler<br/>Routes, status codes and response mapping"]
+            Contact["ContactRequestHandler<br/>Allowlist, token and payload checks"]
         end
         subgraph UseCases["Application use cases"]
             Ingestion["EmailIngestionService<br/>Deduplicate, read, extract and persist"]
@@ -138,11 +242,13 @@ flowchart LR
             ExtractPort["JobExtractor"]
             StorePort["JobStore"]
             PromptPort["BedrockGateway"]
+            ContactPort["ContactMessageSink"]
         end
         subgraph Adapters["Outbound adapters"]
             EmailAdapter["S3EmailReader<br/>S3 SDK, Jakarta Mail and Jsoup"]
             NovaAdapter["BedrockService<br/>Converse and strict JSON parsing"]
             DbAdapter["DynamoDbService<br/>GetItem, Query and transactional writes"]
+            ContactAdapter["Log-only sink<br/>Accepted email and subject length"]
             Config["AwsClientsConfig<br/>Client construction and timeouts"]
         end
     end
@@ -153,6 +259,9 @@ flowchart LR
     Router --> Legacy
     Http --> StorePort
     Http --> Rss
+    Http --> Contact
+    Contact --> ContactPort
+    ContactAdapter -.->|"implements"| ContactPort
     Ingestion --> EmailPort
     Ingestion --> ExtractPort
     Ingestion --> StorePort
@@ -179,11 +288,11 @@ flowchart LR
     classDef port fill:#f3e5f5,stroke:#7b1fa2
     classDef adapter fill:#fce4ec,stroke:#ad1457
     classDef external fill:#eeeeee,stroke:#616161
-    class Router,SesValidation,Http inbound
+    class Router,SesValidation,Http,Contact inbound
     class Ingestion,Rss,Legacy usecase
     class Details,Identity domain
-    class EmailPort,ExtractPort,StorePort,PromptPort port
-    class EmailAdapter,NovaAdapter,DbAdapter,Config adapter
+    class EmailPort,ExtractPort,StorePort,PromptPort,ContactPort port
+    class EmailAdapter,NovaAdapter,DbAdapter,ContactAdapter,Config adapter
     class SES,API,Direct,S3,Nova,DB external
 ```
 
@@ -196,6 +305,7 @@ flowchart TB
     SES -->|"S3 action first"| S3[("Raw MIME bucket")]
     SES -->|"Lambda action second"| Async["Lambda asynchronous invocation"]
     Reader["RSS reader"] --> API["Public HTTP API"]
+    ContactClient["Contact client"] --> API
     API --> Sync["Lambda synchronous invocation"]
 
     subgraph Service["One jobs-feed Lambda application"]
@@ -206,6 +316,7 @@ flowchart TB
         Extract["BedrockService / validated extraction"]
         Store["DynamoDbService"]
         Http["HttpFeedHandler"]
+        Contact["ContactRequestHandler"]
         Render["RssRenderer"]
     end
 
@@ -220,8 +331,10 @@ flowchart TB
     Extract --> Nova["Nova via Converse"]
     Ingest -->|"Atomic jobs and marker"| Store
     Router --> Http
-    Http -->|"Recent-jobs query"| Store
+    Http -->|"GET /feed.xml recent-jobs query"| Store
     Http --> Render
+    Http -->|"POST /contact"| Contact
+    Contact -->|"Accepted email and subject length"| CW["CloudWatch logs"]
     Store --> DB[("DynamoDB jobs and markers")]
     Render -->|"XML response through HTTP API"| Reader
     Router -->|"Propagate ingestion failure"| AsyncFailure["Lambda retry / event-age handling"]
@@ -234,6 +347,8 @@ flowchart TB
 
 No SQS consumer, scheduler, web server, or separate inference service runs inside
 the Java application. The failure queue has no Lambda event-source mapping.
+Contact acceptance writes a log line and returns. It does not read S3, call Nova,
+write DynamoDB, or enqueue work.
 
 ### Component responsibilities (hexagonal mapping)
 
@@ -249,7 +364,10 @@ the Java application. The failure queue has no Lambda event-source mapping.
 | `Job` | Derive a UUID from SES message ID and ordinal and format a fixed-width UTC sort key. |
 | `JobStore` | Define legacy item access, completion lookup, atomic ingestion, and recent-jobs query operations. |
 | `DynamoDbService` | Use strongly consistent marker/feed reads, conditional transactional completion, pagination, and typed record conversion. |
-| `HttpFeedHandler` | Accept HTTP API v2, enforce the feed path and GET method, map responses, and return explicit 5xx on failures. |
+| `HttpFeedHandler` | Accept HTTP API v2, enforce the feed and contact paths and methods, map contact validation failures to HTTP 400, and return explicit 5xx on feed failures. |
+| `ContactRequestHandler` | Require POST and `application/json`, validate the contact fields, require `X-Contact-Token`, accept only the configured email, and call the sink after those checks. |
+| `ContactMessage` | Hold the trimmed name, email, subject, and message of an accepted contact request. |
+| `ContactMessageSink` | Receive an already authorized contact message. The default sink logs the email and subject length. |
 | `RssRenderer` | Serialize channel/items, escape XML, replace invalid XML characters, and emit stable GUIDs and publication dates. |
 | `AwsClientsConfig` | Construct reusable SDK clients with bounded request timeouts. |
 | Terraform and AWS Lambda runtime | Provision resources and configure asynchronous retries, event age, failure capture, and alarms; these are not Java worker components. |
@@ -261,7 +379,7 @@ the Java application. The failure queue has no Lambda event-source mapping.
 | Interface | Input | Behavior |
 | --- | --- | --- |
 | SES receipt event | Nonempty `Records` array with `eventSource: aws:ses`, mail metadata, and receipt verdicts | Validate the complete batch, then process records sequentially. Return `status`, newly stored `jobCount`, and `duplicates`; throw on failure so asynchronous handling can retry. |
-| HTTP API event | Payload `version: "2.0"` and `requestContext.http` | Delegate exclusively to the feed handler. A supplied `action` cannot select an internal operation. |
+| HTTP API event | Payload `version: "2.0"` and `requestContext.http` | Delegate exclusively to the HTTP handler, which serves `/feed.xml` and `/contact`. A supplied `action` cannot select an internal operation. |
 | `health` | Empty/null direct input or `{"action":"health"}` | Return `{"status":"ok","message":"ok"}` without probing AWS dependencies. |
 | `saveJob` | `action`, optional `pk`, `sk`, and `payload` | Legacy `PutItem`; defaults to `pk=job`, a generated sort key, and `"{}"` payload. This is not typed feed ingestion. |
 | `getJob` | `action`, required `pk` and `sk` | Read a legacy payload; return `status:error, code:not_found` if absent. This is not an HTTP 404 response. |
@@ -275,15 +393,38 @@ not use reserved feed or marker keys for arbitrary payloads.
 
 | Method and path | Behavior |
 | --- | --- |
-| `GET /feed.xml` | Query up to 50 most recently received jobs; return RSS XML with HTTP 200. An empty feed is valid. |
+| `GET /feed.xml` | Query newest jobs on `FEED#jobs` and return RSS for up to 50 unique vacancies. An empty feed is valid. |
 | Other methods on `/feed.xml` | HTTP 405 with `Allow: GET`; no storage or model call. |
+| `POST /contact` | Validate the JSON body, require header `X-Contact-Token`, and accept only `CONTACT_ALLOWED_EMAIL`. HTTP 202 after the log sink runs. |
+| Other methods on `/contact` | HTTP 405 with `Allow: POST`. The token and payload are not evaluated. |
+| Contact configuration missing | HTTP 503 when `CONTACT_ALLOWED_EMAIL` or `CONTACT_TOKEN` is blank. The sink is not called. |
+| Invalid contact payload | HTTP 400 with a generic text body. This includes a missing or non-JSON content type, malformed JSON, failed field checks, and obvious markup. The sink is not called. |
+| Missing contact token | HTTP 401 after the payload validates. The body says the token is missing and does not say whether the email is allowlisted. |
+| Wrong contact email or token | HTTP 403 with the body `Forbidden`. The response does not say which check failed. |
 | Other paths | HTTP 404. API Gateway normally rejects unmatched paths before invoking Lambda; the handler also rejects them when invoked directly. |
 | Malformed HTTP event passed to Lambda | HTTP 400 rather than falling back to an internal action. |
 | Feed query/rendering failure | HTTP 500 with a generic text body and a logged failure type; never an empty success-shaped feed. |
+| API Gateway throttle | HTTP 429 from the stage throttle, before Lambda runs. The application does not emit 429. |
 
-Terraform uses `ANY /feed.xml` so unsupported methods reach the handler and receive
-405 instead of API Gateway's default 404. The integration uses payload format v2
-and the `$default` stage. There are no public health, job-write, or inference routes.
+Terraform uses `ANY /feed.xml` and `ANY /contact` so unsupported methods reach the
+handler and receive 405 instead of API Gateway's default 404. Both routes use the
+same AWS_PROXY integration, payload format v2, 15-second timeout, and `$default`
+stage. Invoke permissions are separate: `AllowFeedApi` is limited to `feed.xml`,
+and `AllowContactApi` is limited to `contact`. There are no public health,
+job-write, or inference routes.
+
+`POST /contact` checks in this order. A failing check returns immediately.
+
+1. Method is `POST`.
+2. Both contact settings are non-blank.
+3. `Content-Type` starts with `application/json`, ignoring case and parameters.
+4. The body is textual JSON, decoded when `isBase64Encoded` is true. `name` (120), `email` (320), `subject` (200), and `message` (8,000) are required strings. Each value is trimmed, must be non-blank, and may contain only `\n`, `\r`, and `\t` as control characters. `email` must match `^[^@\s]+@[^@\s]+\.[^@\s]+$`. `name`, `subject`, and `message` are rejected when they contain an HTML-like tag; the handler does not sanitize and continue.
+5. Header `X-Contact-Token` is present. Header lookup is case-insensitive.
+6. The trimmed email equals `CONTACT_ALLOWED_EMAIL`, and the token matches `CONTACT_TOKEN` using `MessageDigest.isEqual`.
+
+The default allowlisted email is `vriesjo@gmail.com`. The comparison is exact and case-sensitive. The token value is not trimmed. On success the handler calls `ContactMessageSink.submit` and returns HTTP 202 with `text/plain`. The composition root's sink logs `event=contact_received` with the email and subject length, and the handler then logs `event=contact_accepted` with the same metadata. Logs omit the token and the message body. A blank configuration logs `event=contact_rejected code=misconfigured`. A failed email or token check logs `event=contact_rejected code=forbidden`.
+
+The token is the sensitive Terraform variable `contact_token`, passed as the Lambda environment variable `CONTACT_TOKEN`. Application code does not embed it. The variable defaults to empty, so an apply without a token leaves the route returning 503. Secrets Manager is not wired; the constructor reads the environment once per execution environment, which is the seam a later secret source would replace. AWS WAF is not associated with the API. Add it only after alarm data shows abuse that stage throttling does not contain.
 
 ### Event and extraction request shapes
 
@@ -349,16 +490,18 @@ completion marker; S3 reads and Nova inference are outside that transaction.
 | [Email normalization and extraction](#email-normalization-and-extraction-flow) | Ingestion of an unprocessed message | Bounded text and validated job details, never arbitrary raw model output. |
 | [Raw-email expiry](#raw-email-expiry-flow) | S3 lifecycle eligibility | Raw object expiry without deleting published jobs or markers. |
 | [HTTP feed request](#http-feed-request-flow) | RSS reader requests `/feed.xml` | Synchronous RSS response without reading S3 or invoking Nova. |
+| [Contact request](#contact-request-flow) | Client posts `/contact` | Synchronous 202 after allowlist and token checks, or 400/401/403/405/503 with no sink call. |
 | [Asynchronous retry and failure capture](#asynchronous-retry-and-failure-capture-flow) | Ingestion throws or an event expires | AWS-managed retry or a failure record in SQS. |
-| [Recent-jobs query](#recent-jobs-query-flow) | Valid HTTP GET | Descending, paginated partition query, not a table scan. |
+| [Recent-jobs query](#recent-jobs-query-flow) | Valid HTTP GET | Descending, paginated partition query, collapsed to unique vacancies before rendering. |
 | [Transactional ingestion](#transactional-ingestion-flow) | Validated extraction | Jobs and marker committed atomically, including zero-job completion. |
 | [Health and operational reads](#health-and-operational-read-flow) | Authorized invocation or operator inspection | Lightweight health or existing logs/metrics/state; no dependency-readiness guarantee. |
 | [Direct item access](#direct-item-access-flow) | Authorized legacy `saveJob` / `getJob` action | Opaque payload storage or lookup, separate from feed records. |
 | [RSS rendering](#rss-rendering-flow) | Successful recent-jobs query | Escaped RSS 2.0 XML with stable GUIDs and dates. |
 | [Failure replay and cleanup](#failure-replay-and-cleanup-flow) | Manual operator recovery | Replay original SES input and remove a failure message only after verification. |
 
-Attachment/OCR processing, URL scraping, cross-email vacancy deduplication, user
-accounts, feed caching, automatic SQS redrive, and a frontend are not implemented.
+Attachment/OCR processing, URL scraping, user
+accounts, feed caching, automatic SQS redrive, contact email delivery, contact
+persistence, Secrets Manager loading, AWS WAF, and a frontend are not implemented.
 
 ### Email ingestion flow
 
@@ -528,8 +671,9 @@ sequenceDiagram
     API->>Handler: HTTP API payload v2
     Handler->>Http: handle(event)
     Http->>Http: Validate version, method and path
-    Http->>Store: recentJobs(50)
-    Store-->>Http: Jobs ordered by receipt time
+    Http->>Store: Page FEED#jobs, newest first
+    Store-->>Http: Stored jobs
+    Http->>Http: Keep the newest copy of each vacancy until 50 unique items
     Http->>Render: render(jobs)
     Render-->>Http: RSS XML string
     Http-->>API: statusCode=200, XML body, base64=false
@@ -539,6 +683,44 @@ sequenceDiagram
 An empty result still returns a valid RSS channel and HTTP 200. Storage or XML
 failures are logged and mapped to HTTP 500. The request does not read raw email,
 invoke Bedrock, update markers, or select internal actions from query/body fields.
+
+### Contact request flow
+
+Contact delivery is synchronous and independent of ingestion and RSS rendering.
+API Gateway throttles before Lambda; a throttled call returns HTTP 429 and does
+not reach this flow.
+
+```mermaid
+sequenceDiagram
+    actor Client as Contact client
+    participant API as API Gateway HTTP API
+    participant Handler as LambdaHandler
+    participant Http as HttpFeedHandler
+    participant Contact as ContactRequestHandler
+    participant Sink as Log-only sink
+
+    Client->>API: POST /contact with JSON and X-Contact-Token
+    API->>Handler: HTTP API payload v2
+    Handler->>Http: handle(event)
+    Http->>Contact: handle(event, POST)
+    alt Allowlist or token setting is blank
+        Contact-->>Client: 503 Contact endpoint is not configured
+    else Content type or payload is invalid
+        Contact-->>Client: 400 Invalid request payload
+    else Token header is missing
+        Contact-->>Client: 401 Missing authentication token
+    else Email differs or token does not match
+        Contact-->>Client: 403 Forbidden
+    else Allowlisted email and matching token
+        Contact->>Sink: submit(name, email, subject, message)
+        Sink-->>Contact: Log email and subject length
+        Contact-->>Client: 202 Accepted
+    end
+```
+
+Any non-POST method returns HTTP 405 with `Allow: POST` before the configuration
+and payload checks. Rejected requests return before `submit`. The sink does not
+send email, write DynamoDB, or enqueue the message.
 
 ### Asynchronous retry and failure capture flow
 
@@ -581,8 +763,15 @@ destination envelope, not a raw SES event. Alarm notifications require configure
 
 ### Recent-jobs query flow
 
-`DynamoDbService.recentJobs` queries one partition in descending sort-key order.
-There is no scan, secondary index, or stored RSS document.
+`FeedVacancies` asks `DynamoDbService` for descending pages of `pk=FEED#jobs` and
+keeps the newest copy of each vacancy until 50 unique items remain or the
+partition runs out. The DynamoDB query itself stays a page read. There is no
+scan, secondary index, or stored RSS document. A repeated vacancy is still
+stored; only the rendered feed collapses it.
+
+A real application URL is the vacancy key. Jobs whose URL is missing or equal
+to `https://itzitzo.nl/jobs/` use the trimmed, case-folded title and company
+instead, so the shared placeholder does not merge unrelated jobs.
 
 ```mermaid
 sequenceDiagram
@@ -590,17 +779,14 @@ sequenceDiagram
     participant Store as DynamoDbService
     participant DB as DynamoDB
 
-    Http->>Store: recentJobs(50)
-    loop Until 50 jobs collected or partition exhausted
+    loop Until 50 unique vacancies or the partition is exhausted
+        Http->>Store: recentJobPage(50, exclusive sort key)
         Store->>DB: Query pk=FEED#jobs, descending, consistent read
         Note over Store,DB: First request omits ExclusiveStartKey
         DB-->>Store: Items and optional LastEvaluatedKey
-        Store->>Store: Convert and validate stored job attributes
-        opt More items needed and cursor exists
-            Store->>Store: Use cursor and remaining item limit
-        end
+        Store-->>Http: Page of stored jobs
+        Http->>Http: Drop a vacancy key already kept
     end
-    Store-->>Http: Immutable ordered job list
 ```
 
 #### Feed-record meaning
@@ -675,7 +861,7 @@ application bounds leave room below DynamoDB's service limits.
 | Email A is replayed | Marker already exists. | No S3 read, inference, or additional publication. |
 | Email B contains no vacancies | Only `EMAIL#B / METADATA` with count 0 is committed. | It is complete and will not be repeatedly inferred. |
 | Email C fails extraction | No jobs or marker are written for C. | AWS retry or operator replay can attempt C again. |
-| Another email repeats A's vacancy | Its SES message ID is different. | It may publish another item; cross-email deduplication is not implemented. |
+| Another email repeats A's vacancy | Its SES message ID is different. | Both items are stored. The feed renders the newest and omits the older copy. |
 
 ### Health and operational read flow
 
@@ -803,8 +989,9 @@ the underlying cause. Failure cleanup must not delete published jobs or markers.
 ## Cross-cutting concurrency, idempotency, and rollout
 
 SES/Lambda delivery is at-least-once. Completion markers provide duplicate-safe
-publication per SES message ID, not exactly-once model execution or deduplication
-of equivalent vacancies received in different emails.
+publication per SES message ID, not exactly-once model execution. A different
+email that repeats a vacancy is stored again. The feed read keeps the newest
+copy of that vacancy and leaves the stored rows in place.
 
 The marker precheck is a performance optimization. The first transactional item
 conditionally creates the marker; all jobs are in the same transaction.
@@ -818,7 +1005,7 @@ SQL locks, scheduler leases, or in-process job queue.
 AWS SDK API call timeouts are 90 seconds for Bedrock, 15 seconds for S3, and
 10 seconds for DynamoDB. Bedrock attempts are capped at 40 seconds within the
 overall call budget. The default Lambda timeout is 180 seconds. HTTP integration
-timeout is 15 seconds; HTTP requests do not perform inference.
+timeout is 15 seconds. RSS and contact requests do not perform inference.
 
 GitHub Actions serializes deployments by target environment with
 `cancel-in-progress: false`. Both plan and apply jobs use the GitHub environment
@@ -827,9 +1014,10 @@ target environment and uses encrypted S3 storage with lock files. These deployme
 locks do not serialize live Lambda invocations.
 
 Roll out application code and its new environment configuration together. A
-default handler requires all table, model, email, and feed variables at construction.
-Legacy opaque records remain separate from typed feed records and are not migrated
-or automatically published.
+default handler requires the table, model, email, and feed variables at construction.
+`CONTACT_ALLOWED_EMAIL` and `CONTACT_TOKEN` are optional at construction; a blank
+value makes `POST /contact` return HTTP 503. Legacy opaque records remain separate
+from typed feed records and are not migrated or automatically published.
 
 SES rule creation is opt-in and references an existing rule set. Terraform never
 activates a rule set, changes DNS, or verifies a domain. Review preceding/following
@@ -839,7 +1027,9 @@ still required before production rollout.
 
 Pushing to `main` currently triggers a prod apply/deploy. Manual workflow runs can
 target dev with `apply=false` for a plan or `apply=true` for deployment. The default
-infrastructure includes a public feed API even while SES integration is disabled.
+infrastructure includes the public feed and contact routes even while SES
+integration is disabled. Deployment identity is the external GitHub OIDC role
+described below.
 
 ## Persistence model
 
@@ -864,7 +1054,9 @@ are omitted from DynamoDB when absent. Title/company/location are bounded to
 
 There is no stored RSS snapshot. RSS is generated from current feed records on
 each request. Removing raw email or a failure envelope does not undo a committed
-publication; deleting a processed marker would weaken replay protection.
+publication; deleting a processed marker would weaken replay protection. Accepted
+contact messages are not a stored item. Their only record is the CloudWatch log
+line written by the contact sink.
 
 ## Configuration and operations
 
@@ -879,14 +1071,20 @@ publication; deleting a processed marker would weaken replay protection.
 | `FEED_DESCRIPTION` / `feed_description` | `Recent job vacancies received by email.` | RSS channel description. |
 | `FEED_PUBLIC_URL` | Generated API endpoint plus `/feed.xml` | Atom self-link and default channel website. |
 | `FEED_WEBSITE_URL` / `feed_website_url` | Feed URL unless explicitly configured | RSS channel website link. |
+| `CONTACT_ALLOWED_EMAIL` / `contact_allowed_email` | `vriesjo@gmail.com` | Exact, case-sensitive sender accepted by `POST /contact`. |
+| `CONTACT_TOKEN` / `contact_token` | Empty sensitive Terraform variable | Shared secret required in `X-Contact-Token`. Blank fails closed with HTTP 503. |
 | `enable_ses_receipt_rule` | `false` | Opt in to receipt rule and SES delivery/invoke permissions. |
 | `ses_receipt_rule_set_name` | Empty; required when enabled | Existing reviewed SES rule set; not activated by Terraform. |
 | `ses_recipient` | Empty; required when enabled | Single receiving email address. |
 | `bedrock_resource_arns` | Derived standard Nova model/profile resources | Explicit override for custom profiles and underlying model ARNs. |
 | `lambda_memory_size` / `lambda_timeout_seconds` | 1,024 MiB / 180 seconds | Lambda capacity and execution limit. |
 | `log_retention_days` | 14 | Application CloudWatch log retention. |
-| `alarm_actions` | Empty list | SNS actions for Lambda error, async-drop, and destination-delivery alarms. |
-| API stage throttling | Rate 10, burst 20 | Default HTTP API route throttling settings. |
+| `alarm_actions` | Empty list | SNS actions for Lambda error, async-drop, destination-delivery, and API Gateway alarms. |
+| API stage throttling | Rate 10, burst 20, literals on `aws_apigatewayv2_stage.feed` | Shared bucket for `/feed.xml` and `/contact`. Excess calls return HTTP 429 before Lambda. See [Admission control](#admission-control). |
+| `api_alarm_4xx_threshold` | 25 | Alarm when the five-minute `4XXError` sum is greater than this value. |
+| `api_alarm_5xx_threshold` | 1 | Alarm when the five-minute `5XXError` sum is greater than this value. |
+| `api_alarm_count_threshold` | 500 | Alarm when the five-minute request `Count` sum is greater than this value. |
+| `api_alarm_throttle_threshold` | 10 | Alarm when the five-minute `Throttles` sum is greater than this value. |
 | `TF_STATE_BUCKET` | Required GitHub Actions variable | Persistent Terraform backend bucket. |
 | `AWS_ROLE_ARN` | GitHub Actions secret | OIDC role assumed by deployment jobs; no static AWS keys in the workflow. |
 | Workflow `environment` / `apply` | Manual defaults: `dev` / `false` | Target tfvars/state and whether to apply/deploy. Push to `main` targets prod. |
@@ -906,18 +1104,114 @@ ingestion_failure_queue_url
 AWS/Lambda: Errors
 AWS/Lambda: DestinationDeliveryFailures
 AWS/Lambda: AsyncEventsDropped
+AWS/ApiGateway: 4XXError
+AWS/ApiGateway: 5XXError
+AWS/ApiGateway: Count
+AWS/ApiGateway: Throttles
 ```
 
-The feed is intentionally public. Route only appropriate job-related email to
-ingestion and review extraction quality before publication; schema validation and
-prompt instructions are not a guarantee that AI-generated content is factually
-correct or free of private text. Protect raw email, failure records, logs, direct
-Lambda invocation, and Terraform state with IAM.
+The contact URL is the same API host as `feed_url`, with path `/contact`. There
+is no separate Terraform output for it.
+
+The feed is intentionally public. The mail and feed rules are in
+[Security boundaries](#security-boundaries). Route only appropriate job-related
+email to ingestion and review extraction quality before publication; schema
+validation and prompt instructions are not a guarantee that AI-generated content
+is factually correct or free of private text. Protect raw email, failure records,
+logs, direct Lambda invocation, the contact token, and Terraform state with IAM.
+
+Rotate `contact_token` by changing that sensitive variable in the target tfvars
+file and applying Terraform. The workflow's later `update-function-code` publish
+replaces the zip and leaves the new environment in place. Requests that still
+send the previous token receive HTTP 403.
 
 Failure alarms use five-minute sum periods, a threshold above zero, and missing
-data treated as not breaching. They notify people only when `alarm_actions` is set.
-Application health alone does not establish email delivery, model access, or
+data treated as not breaching. API Gateway alarms use the same period and
+missing-data treatment with the thresholds in the table above. All of these
+alarms notify people only when `alarm_actions` is set. Application health alone
+does not establish email delivery, model access, contact configuration, or
 failure-destination correctness.
+
+## Deployment identity
+
+GitHub Actions authenticates to AWS with OIDC. The workflow requests
+`id-token: write` and `contents: read`. `configure-aws-credentials` exchanges
+GitHub's token for short-lived STS credentials. The workflow stores no static
+AWS access keys. The OIDC provider, the IAM role, and its permission policy are
+external prerequisites. This Terraform configuration does not create them.
+
+The trust model has three layers:
+
+1. The account OIDC provider `token.actions.githubusercontent.com`, with audience `sts.amazonaws.com`.
+2. The IAM role trust policy, which allows `sts:AssumeRoleWithWebIdentity` for this repository's subjects.
+3. The role's permission policy, which is the only layer that grants AWS API access.
+
+The role name for this repository is `github-actions-itzitzo-jobs-feed`. The
+build job does not assume it. The plan and apply jobs do, and both bind the
+GitHub environment `production` even when the Terraform target is `dev`. A job
+with that environment presents an environment subject. The branch and tag
+subjects stay in the trust policy for a job on `main` or a tag that assumes
+the role without a GitHub environment. This repository's subjects include
+owner id `13521613` and repository id `1429390963`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::607399097622:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:vriesjo@13521613/itzitzo-jobs-feed@1429390963:ref:refs/heads/main",
+            "repo:vriesjo@13521613/itzitzo-jobs-feed@1429390963:ref:refs/tags/*",
+            "repo:vriesjo@13521613/itzitzo-jobs-feed@1429390963:environment:production"
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+GitHub configuration for the workflow is:
+
+| Setting | Value | Role |
+| --- | --- | --- |
+| Secret `AWS_ROLE_ARN` | ARN of `github-actions-itzitzo-jobs-feed` | Role assumed by plan and apply. |
+| Variable `AWS_REGION` | `eu-west-1` when unset in the workflow | Must match the target tfvars region. |
+| Variable `TF_STATE_BUCKET` | Required; this account uses `itzitzo-jobs-feed-tfstate-607399097622` | Encrypted S3 backend. The workflow rejects a run when it is unset. |
+| Environment `production` | Used by plan and apply | Holds the AWS secret and variable access. Required reviewers are a repository setting, not a workflow condition. |
+
+State keys are `itzitzo-jobs-feed/dev.tfstate` and `itzitzo-jobs-feed/prod.tfstate`.
+The backend enables encryption and S3 lock files (`use_lockfile`). It does not
+use a DynamoDB lock table. The state bucket must already exist, stay private,
+and allow the deploy role to read and write state objects and their `.tflock`
+files. Concurrency group `terraform-<environment>` (or `terraform-prod` on a
+push to `main`) has `cancel-in-progress: false`, so a second deployment waits.
+Those locks do not serialize live Lambda invocations.
+
+The deploy role needs to manage Lambda code and configuration, the HTTP API,
+DynamoDB, the email bucket, the optional SES receipt rule, SQS, CloudWatch logs
+and alarms, IAM for the Lambda execution role, and the state bucket. Keep that
+policy on this repository's role. The permission set is maintained in IAM, not
+in `infra/`.
+
+| Risk | What limits it |
+| --- | --- |
+| Another repository assumes the role | Trust `sub` is limited to this repository's id-qualified subjects. |
+| An unreviewed apply changes production | Plan and apply both run in the `production` GitHub environment, where reviewers can be required. |
+| The deploy role can change more than this stack | Keep the permission policy to the resources above and avoid sharing the role. |
+| A workflow run uses disposable local state | `TF_STATE_BUCKET` is required, and init fails closed when it is missing. |
+
+A manual `apply=false` run should show a successful OIDC assumption, `terraform init`, and `terraform plan`. An `apply=true` run should then update the Lambda zip, the log group, the DynamoDB table, and `feed_url`.
 
 ## Tests
 
@@ -929,9 +1223,13 @@ Run application checks and create the deployable artifact with:
 
 The suites cover legacy actions, event routing, verdict rejection, multi-record
 retry, duplicate publication, strict Converse output handling, MIME normalization
-and size bounds, DynamoDB transactional races/pagination, and RSS/HTTP behavior.
+and size bounds, DynamoDB transactional races/pagination, RSS/HTTP behavior, and
+contact acceptance and rejection. Contact tests require HTTP 202 only for the
+allowlisted email plus matching token, HTTP 401 when the token header is missing,
+HTTP 403 for a different email or token, and HTTP 400 or 405 for an invalid
+payload or method. Those rejected cases assert that the sink receives no message.
 AWS SDK clients are mocked or replaced with test stores; these are not live
-SES delivery or Bedrock quality tests.
+SES delivery, Bedrock quality, or API Gateway throttle tests.
 
 After provider initialization, run the infrastructure scenarios with:
 
@@ -939,14 +1237,20 @@ After provider initialization, run the infrastructure scenarios with:
 terraform -chdir=infra test
 ```
 
-Terraform scenarios use a mocked AWS provider to verify safe defaults, receipt
-action ordering, rejection of missing SES configuration, and unsupported model
-configuration without explicit permissions. The deployment ZIP must exist first.
-The plan job also runs these scenarios with its downloaded artifact path.
+Terraform scenarios use a mocked AWS provider to verify safe defaults, the
+`ANY /contact` route and `AllowContactApi` invoke permission, the default
+allowlisted contact email, receipt action ordering, rejection of missing SES
+configuration, and unsupported model configuration without explicit permissions.
+The deployment ZIP must exist first. The plan job also runs these scenarios
+with its downloaded artifact path.
 
 Live dev acceptance must separately prove SMTP delivery to S3, invocation using
 the selected Nova profile, stored jobs, public RSS retrieval, duplicate replay,
-and failure-destination recovery. Compare Micro and Lite on representative
+and failure-destination recovery. Contact acceptance must prove HTTP 202 for the
+allowlisted email and token, and HTTP 400, 401, and 403 for the rejection cases,
+with an accepted log line only on HTTP 202. Compare Micro and Lite on representative
 approved samples before selecting the production model. See the
-[feature specification](../.github/issues/feature_email_to_rss.md) and
-[README](../README.md) for setup and replay instructions.
+[feature specification](../.github/issues/feature_email_to_rss.md), the
+[OIDC setup analysis](../.github/issues/feature_aws_oicd_setup.md), the
+[contact protection notes](../.github/issues/feature_contact_endpoint_abuse_protection.md),
+and [README](../README.md) for setup and replay instructions.

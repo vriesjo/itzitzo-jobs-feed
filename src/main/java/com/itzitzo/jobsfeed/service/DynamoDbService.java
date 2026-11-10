@@ -117,23 +117,39 @@ public class DynamoDbService implements JobStore {
             throw new IllegalArgumentException("Feed limit must be between 1 and 50");
         }
         List<Job> jobs = new ArrayList<>();
-        Map<String, AttributeValue> cursor = Map.of();
-        do {
-            QueryRequest.Builder request = QueryRequest.builder()
-                .tableName(tableName).consistentRead(true)
-                .keyConditionExpression("pk = :pk")
-                .expressionAttributeValues(Map.of(":pk", text("FEED#jobs")))
-                .scanIndexForward(false).limit(limit - jobs.size());
-            if (!cursor.isEmpty()) {
-                request.exclusiveStartKey(cursor);
+        String cursor = null;
+        boolean more = true;
+        while (more && jobs.size() < limit) {
+            FeedPage page = recentJobPage(limit - jobs.size(), cursor);
+            jobs.addAll(page.jobs());
+            more = page.more() && !page.jobs().isEmpty();
+            if (!page.jobs().isEmpty()) {
+                cursor = page.jobs().get(page.jobs().size() - 1).sortKey();
             }
-            QueryResponse response = dynamoDbClient.query(request.build());
-            for (Map<String, AttributeValue> item : response.items()) {
-                jobs.add(fromItem(item));
-            }
-            cursor = response.lastEvaluatedKey();
-        } while (!cursor.isEmpty() && jobs.size() < limit);
+        }
         return List.copyOf(jobs);
+    }
+
+    @Override
+    public FeedPage recentJobPage(int limit, String exclusiveSortKey) {
+        if (limit < 1 || limit > 50) {
+            throw new IllegalArgumentException("Feed limit must be between 1 and 50");
+        }
+        QueryRequest.Builder request = QueryRequest.builder()
+            .tableName(tableName).consistentRead(true)
+            .keyConditionExpression("pk = :pk")
+            .expressionAttributeValues(Map.of(":pk", text("FEED#jobs")))
+            .scanIndexForward(false).limit(limit);
+        if (exclusiveSortKey != null) {
+            request.exclusiveStartKey(key("FEED#jobs", exclusiveSortKey));
+        }
+        QueryResponse response = dynamoDbClient.query(request.build());
+        List<Job> jobs = new ArrayList<>();
+        for (Map<String, AttributeValue> item : response.items()) {
+            jobs.add(fromItem(item));
+        }
+        boolean more = response.hasLastEvaluatedKey() && !response.lastEvaluatedKey().isEmpty();
+        return new FeedPage(jobs, more);
     }
 
     private static Map<String, AttributeValue> toItem(Job job) {

@@ -1,7 +1,6 @@
 package com.itzitzo.jobsfeed.service;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,7 +41,7 @@ class RssFeedTest {
     void returnsEmptyRssAndRestrictsRoutesWithoutReadingStorage() throws Exception {
         JobStore store = mock(JobStore.class);
         HttpFeedHandler handler = new HttpFeedHandler(store, renderer);
-        when(store.recentJobs(50)).thenReturn(List.of());
+        when(store.recentJobPage(FeedVacancies.FEED_LIMIT, null)).thenReturn(new FeedPage(List.of(), false));
         Map<String, Object> result = http(handler, "GET", "/feed.xml");
         assertEquals(200, result.get("statusCode"));
         assertEquals(0, parse(result.get("body").toString()).getElementsByTagName("item").getLength());
@@ -52,13 +51,14 @@ class RssFeedTest {
         Map<String, Object> wrongMethod = http(handler, "POST", "/feed.xml");
         assertEquals(405, wrongMethod.get("statusCode"));
         assertEquals("GET", ((Map<?, ?>) wrongMethod.get("headers")).get("Allow"));
-        verify(store, times(1)).recentJobs(anyInt());
+        verify(store, times(1)).recentJobPage(FeedVacancies.FEED_LIMIT, null);
     }
 
     @Test
     void reportsDependencyFailuresRatherThanReturningAnEmptyFeed() {
         JobStore store = mock(JobStore.class);
-        when(store.recentJobs(50)).thenThrow(new IllegalStateException("private error details"));
+        when(store.recentJobPage(FeedVacancies.FEED_LIMIT, null))
+            .thenThrow(new IllegalStateException("private error details"));
         Map<String, Object> result = http(new HttpFeedHandler(store, renderer), "GET", "/feed.xml");
         assertEquals(500, result.get("statusCode"));
         assertFalse(result.get("body").toString().contains("private error"));

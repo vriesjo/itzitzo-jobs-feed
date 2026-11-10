@@ -53,7 +53,7 @@ public class HttpFeedHandler {
         }
         try {
             long start = System.nanoTime();
-            List<Job> jobs = store.recentJobs(50);
+            List<Job> jobs = FeedVacancies.collect(store, FeedVacancies.FEED_LIMIT);
             String xml = renderer.render(jobs);
             LOG.info("event=feed_rendered jobCount={} durationMs={}", jobs.size(), (System.nanoTime() - start) / 1_000_000);
             return Map.of(

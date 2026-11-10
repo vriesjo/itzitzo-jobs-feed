@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class EmailIngestionService {
-    private static final String DEFAULT_APPLICATION_URL = "https://itzitzo.nl/jobs/";
     private final EmailReader reader;
     private final JobExtractor extractor;
     private final JobStore store;
@@ -31,7 +30,7 @@ public class EmailIngestionService {
             JobDetails details = extracted.get(i);
             if (details.applicationUrl() == null) {
                 details = new JobDetails(details.title(), details.company(), details.location(),
-                    details.description(), DEFAULT_APPLICATION_URL, details.publishedAt());
+                    details.description(), JobDetails.PLACEHOLDER_APPLICATION_URL, details.publishedAt());
             }
             jobs.add(Job.fromEmail(messageId, receivedAt, i, details));
         }

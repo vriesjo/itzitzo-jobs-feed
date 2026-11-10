@@ -12,6 +12,7 @@ public record JobDetails(
     String applicationUrl,
     Instant publishedAt
 ) {
+    public static final String PLACEHOLDER_APPLICATION_URL = "https://itzitzo.nl/jobs/";
     public JobDetails {
         requireText(title, "title", 300);
         requireText(description, "description", 12_000);

@@ -14,4 +14,6 @@ public interface JobStore {
     boolean saveIngestion(String messageId, List<Job> jobs);
 
     List<Job> recentJobs(int limit);
+
+    FeedPage recentJobPage(int limit, String exclusiveSortKey);
 }
