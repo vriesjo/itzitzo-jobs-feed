@@ -1,0 +1,5 @@
+The listing says: {"note":"not a vacancy","status":"draft"}
+
+Java Developer at Example Labs in Amsterdam.
+32 hours per week.
+Link: Java Developer | URL: https://example.com/jobs/java?a=1&b=2

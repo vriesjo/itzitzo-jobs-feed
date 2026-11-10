@@ -1,0 +1,12 @@
+{
+  "jobs": [
+    {
+      "title": "Java Developer",
+      "company": "Example Labs",
+      "location": "Amsterdam",
+      "description": "32 hours per week.",
+      "applicationUrl": "https://example.com/jobs/java?a=1&b=2",
+      "publishedAt": null
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "title": "Java Developer",
+      "company": "Nederlandse Spoorwegen",
+      "location": "Utrecht",
+      "description": "EUR 90 per hour, 36 hours per week.",
+      "applicationUrl": "https://www.linkedin.com/comm/jobs/view/12345?trk=eml-jobs&tracking=a%2Fb",
+      "publishedAt": null
+    },
+    {
+      "title": "Platform Engineer",
+      "company": "ICT Rijk van Nijmegen",
+      "location": "Gelderland",
+      "description": "EUR 85 per hour, 32 hours per week.",
+      "applicationUrl": "https://example.com/jobs/platform?ref=mail&city=Nijmegen",
+      "publishedAt": null
+    }
+  ]
+}
