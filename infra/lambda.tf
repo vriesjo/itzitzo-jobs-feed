@@ -8,7 +8,7 @@ resource "aws_lambda_function" "app" {
   function_name = local.lambda_function_name
   role          = aws_iam_role.lambda_exec.arn
   runtime       = "java17"
-  handler       = "com.itzitzo.jobsfeed.LambdaHandler::handleRequest"
+  handler       = "com.itzitzo.jobsfeed.adapter.inbound.LambdaHandler::handleRequest"
 
   filename         = var.lambda_artifact_path
   source_code_hash = filebase64sha256(var.lambda_artifact_path)

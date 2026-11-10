@@ -8,7 +8,7 @@ Java 17 AWS Lambda project (Gradle) with:
 
 ## How it works
 
-The Lambda handler is `com.itzitzo.jobsfeed.LambdaHandler::handleRequest`.
+The Lambda handler is `com.itzitzo.jobsfeed.adapter.inbound.LambdaHandler::handleRequest`.
 
 - SES receipt events fetch raw MIME from the configured private S3 bucket, normalize text, extract jobs with Nova, and atomically save jobs plus a processed-message marker.
 - API Gateway HTTP API v2 events serve the latest 50 jobs at `GET /feed.xml` as RSS 2.0.
@@ -43,9 +43,10 @@ CI/CD is in `.github/workflows/deploy-lambda.yml`:
 │   ├── envs/prod.tfvars
 │   ├── *.tf
 ├── src/main/java/com/itzitzo/jobsfeed/
-│   ├── LambdaHandler.java
-│   ├── config/AwsClientsConfig.java
-│   └── service/
+│   ├── adapter/inbound/
+│   ├── application/
+│   ├── domain/
+│   └── infra/
 └── build.gradle
 ```
 

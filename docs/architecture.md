@@ -63,12 +63,13 @@ or independently deployed Java services:
 
 | Area | Purpose |
 | --- | --- |
-| `src/main/java/com/itzitzo/jobsfeed/LambdaHandler.java` | Lambda composition root and inbound event router. |
-| `model/` | SES metadata, validated job details, deterministic IDs, and sort keys. |
-| `service/` | Ingestion, MIME/S3 reading, Nova extraction, DynamoDB storage, HTTP responses, contact validation, and RSS rendering. |
-| `config/AwsClientsConfig.java` | AWS SDK v2 clients and request timeouts. |
+| `adapter/inbound/` | Lambda composition root, SES event validation, HTTP routing, and contact admission. |
+| `application/` | Ingestion, feed vacancy aggregation, and RSS rendering. |
+| `domain/` | Job identity, job details, contact messages, and feed pages. |
+| `domain/port/` | Email reading, extraction, persistence, direct inference, and contact submission. |
+| `infra/` | S3, Bedrock, DynamoDB, and AWS client adapters. The Terraform directory `infra/` is separate. |
 | `src/test/` | Routing, ingestion, extraction, persistence, MIME, and RSS behavior checks. |
-| `infra/` | Terraform resources, environment values, persistent state configuration, and mocked infrastructure scenarios. |
+| `infra/*.tf` | Terraform resources, environment values, persistent state configuration, and mocked infrastructure scenarios. |
 | `.github/workflows/deploy-lambda.yml` | Build, plan, infrastructure validation, and optional apply/deploy. |
 
 The application uses AWS Lambda Java Core, AWS SDK v2 for Bedrock Runtime,
@@ -211,9 +212,12 @@ This level-3 view opens the Java Lambda application into its code components:
 - **Outbound ports** describe email reading, extraction, persistence, direct inference, and contact submission.
 - **Outbound adapters** implement those ports with AWS SDK clients, parsing libraries, and the contact log sink.
 
-These are logical boundaries in one application, not enforced modules. The
-default handler constructor knows concrete adapters, and the Bedrock adapter
-also parses extraction JSON into domain objects.
+These boundaries are packages in one Gradle application. `domain` does not
+depend on AWS. `domain.port` is the outbound ports. `application` orchestrates
+use cases. `adapter.inbound` accepts SES and HTTP events. `infra` implements the
+ports with AWS SDK clients, MIME parsing, and the contact log statement in the
+composition root. `adapter.inbound.LambdaHandler` constructs the concrete
+adapters. The Bedrock adapter also parses extraction JSON into domain objects.
 
 ```mermaid
 flowchart LR
